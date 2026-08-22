@@ -1,0 +1,11 @@
+[package]
+name = "zigbee"
+version = "0.1.0"
+description = "A sans-io Zigbee end device stack for no_std targets"
+categories = ["embedded", "network-programming", "no-std"]
+keywords = ["zigbee", "ieee802154", "embedded", "no-std"]
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aes = { version = "0.8", default-features = false }

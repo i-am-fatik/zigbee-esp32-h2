@@ -1,0 +1,9 @@
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+[target.riscv32imac-unknown-none-elf]
+runner = "espflash flash --monitor --chip esp32h2"
+rustflags = ["-C", "link-arg=-Tlinkall.x"]
+
+[env]
+ESP_LOG = "info"
