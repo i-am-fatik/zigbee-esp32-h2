@@ -208,3 +208,100 @@ fn rubbish_is_rejected_without_panicking() {
     }
     assert!(!device.joined());
 }
+
+fn joined_device() -> Device {
+    let mut device = device();
+    device.tick(Instant::from_millis(0));
+    drain(&mut device);
+    device.receive(&beacon(true), Instant::from_millis(10));
+    drain(&mut device);
+    device.receive(ASSOCIATION_RESPONSE, Instant::from_millis(20));
+    drain(&mut device);
+    device.receive(&deliver_unsecured(TRANSPORT_KEY), Instant::from_millis(30));
+    drain(&mut device);
+    events(&mut device);
+    device
+}
+
+#[test]
+fn a_few_refused_frames_send_the_device_looking_for_a_new_parent() {
+    let mut device = joined_device();
+    assert!(device.joined());
+
+    for tick in 0..3 {
+        device.transmission_failed(Instant::from_millis(1_000 + tick));
+    }
+
+    assert!(!device.joined(), "three refusals mean the parent stopped listening");
+    device.tick(Instant::from_millis(1_100));
+    let frames = drain(&mut device);
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0][frames[0].len() - 1], 0x07, "a beacon request");
+}
+
+#[test]
+fn one_refused_frame_is_not_enough() {
+    let mut device = joined_device();
+    device.transmission_failed(Instant::from_millis(1_000));
+    assert!(device.joined());
+}
+
+#[test]
+fn a_delivery_clears_the_run_of_failures() {
+    let mut device = joined_device();
+    device.transmission_failed(Instant::from_millis(1_000));
+    device.transmission_failed(Instant::from_millis(1_001));
+    device.transmission_delivered();
+    device.transmission_failed(Instant::from_millis(1_002));
+
+    assert!(device.joined(), "the run has to be consecutive");
+}
+
+#[test]
+fn rejoining_keeps_the_channel_the_network_and_the_key() {
+    let mut device = joined_device();
+    let before = device.radio();
+    for tick in 0..3 {
+        device.transmission_failed(Instant::from_millis(1_000 + tick));
+    }
+
+    assert_eq!(device.radio().channel, before.channel);
+    assert_eq!(device.radio().pan_id, before.pan_id);
+}
+
+#[test]
+fn a_closed_network_still_takes_a_rejoin() {
+    let mut device = joined_device();
+    for tick in 0..3 {
+        device.transmission_failed(Instant::from_millis(1_000 + tick));
+    }
+    device.tick(Instant::from_millis(1_100));
+    drain(&mut device);
+
+    device.receive(&beacon(false), Instant::from_millis(1_200));
+
+    let frames = drain(&mut device);
+    assert_eq!(
+        frames.len(),
+        1,
+        "a member rejoins without permit-join, unlike a first join"
+    );
+    let request = &frames[0];
+    assert_eq!(&request[..2], &[0x61, 0x88], "MAC data, ack requested");
+}
+
+#[test]
+fn giving_up_on_the_rejoin_falls_back_to_a_full_scan() {
+    let mut device = joined_device();
+    for tick in 0..3 {
+        device.transmission_failed(Instant::from_millis(1_000 + tick));
+    }
+    events(&mut device);
+
+    device.tick(Instant::from_millis(30_000));
+
+    assert!(events(&mut device)
+        .iter()
+        .any(|event| matches!(event, Event::Left)));
+    assert_eq!(device.radio().pan_id, 0xffff);
+}

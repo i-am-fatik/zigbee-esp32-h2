@@ -14,6 +14,15 @@ const POLL_INTERVAL_MS: u32 = 300;
 const ASSOCIATION_TIMEOUT_MS: u32 = 6_000;
 const KEY_TIMEOUT_MS: u32 = 12_000;
 
+/// How often a joined device checks that its parent is still listening, and how
+/// many refused frames in a row it takes before that parent is presumed gone.
+const KEEPALIVE_MS: u32 = 60_000;
+const FAILURES_BEFORE_REJOIN: u8 = 3;
+const REJOIN_TIMEOUT_MS: u32 = 20_000;
+const REJOIN_RETRY_MS: u32 = 2_000;
+
+const REJOIN_ACCEPTED: u8 = 0x00;
+
 /// How far ahead of the live counter a stored counter runs, so a power cut can
 /// never replay a frame counter the coordinator has already accepted.
 const COUNTER_MARGIN: u32 = 1024;
@@ -186,6 +195,13 @@ enum Phase {
         give_up_at: Instant,
         next_poll: Instant,
     },
+    /// Holding the network key but no longer heard by the old parent, looking
+    /// for another router on the same network. Unlike a first join this needs
+    /// no permit-join, because the device is already a member.
+    Rejoining {
+        give_up_at: Instant,
+        next_attempt: Instant,
+    },
     Joined,
 }
 
@@ -258,6 +274,8 @@ pub struct Device {
     report_pending: bool,
     last_report_at: Instant,
     identifying: bool,
+    consecutive_failures: u8,
+    next_keepalive: Instant,
     outbox: Queue<Outgoing, OUTBOX_CAPACITY>,
     events: Queue<Option<Event>, EVENT_CAPACITY>,
 }
@@ -289,6 +307,8 @@ impl Device {
             report_pending: false,
             last_report_at: Instant::from_millis(0),
             identifying: false,
+            consecutive_failures: 0,
+            next_keepalive: Instant::from_millis(KEEPALIVE_MS),
             outbox: Queue::new(Outgoing {
                 frame: [0; FRAME_CAPACITY],
                 len: 0,
@@ -325,6 +345,27 @@ impl Device {
     /// Whether the device is on a network and holds the network key.
     pub const fn joined(&self) -> bool {
         matches!(self.phase, Phase::Joined)
+    }
+
+    /// Tells the stack a frame could not be delivered.
+    ///
+    /// A radio reports this when it exhausts its attempts. Enough of them in a
+    /// row means the parent has stopped listening, and the device goes looking
+    /// for another one rather than talking into an empty room.
+    pub fn transmission_failed(&mut self, now: Instant) {
+        if !self.joined() {
+            return;
+        }
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        if self.consecutive_failures < FAILURES_BEFORE_REJOIN {
+            return;
+        }
+        self.start_rejoin(now);
+    }
+
+    /// Tells the stack a frame reached its parent.
+    pub fn transmission_delivered(&mut self) {
+        self.consecutive_failures = 0;
     }
 
     /// The state of the On/Off application.
@@ -408,6 +449,11 @@ impl Device {
 
         if self.joined() {
             self.honour_reporting(now);
+            if now.reached(self.next_keepalive) {
+                self.next_keepalive = now.plus_millis(KEEPALIVE_MS);
+                let parent = mac::Addr::Short(self.parent);
+                self.send_data_request(self.radio.pan_id, parent);
+            }
             return;
         }
 
@@ -458,6 +504,22 @@ impl Device {
                     self.phase = Phase::WaitingForKey {
                         give_up_at,
                         next_poll: now.plus_millis(POLL_INTERVAL_MS),
+                    };
+                }
+            }
+            Phase::Rejoining {
+                give_up_at,
+                next_attempt,
+            } => {
+                if now.reached(give_up_at) {
+                    self.restart_scan(now);
+                    return;
+                }
+                if now.reached(next_attempt) {
+                    self.send_beacon_request();
+                    self.phase = Phase::Rejoining {
+                        give_up_at,
+                        next_attempt: now.plus_millis(REJOIN_RETRY_MS),
                     };
                 }
             }
@@ -705,6 +767,81 @@ impl Device {
         self.last_report_at = now;
     }
 
+    /// Keeps the key, the network and the channel, and goes looking for a
+    /// router on that network willing to take the device as a child.
+    fn start_rejoin(&mut self, now: Instant) {
+        self.consecutive_failures = 0;
+        self.phase = Phase::Rejoining {
+            give_up_at: now.plus_millis(REJOIN_TIMEOUT_MS),
+            next_attempt: now,
+        };
+    }
+
+    fn send_rejoin_request(&mut self, parent: mac::Addr) {
+        let Some(key) = self.network_key else {
+            return;
+        };
+        let parent_short = match parent {
+            mac::Addr::Short(short) => short,
+            _ => return,
+        };
+
+        let mut buffer = [0u8; FRAME_CAPACITY];
+        let mac_seq = self.next_mac_seq();
+        let ieee = self.config.ieee;
+        let mut out = Writer::new(&mut buffer);
+        mac::data(
+            &mut out,
+            mac_seq,
+            self.radio.pan_id,
+            parent,
+            mac::Addr::Short(self.radio.short_address),
+            true,
+        );
+
+        self.nwk_seq = self.nwk_seq.wrapping_add(1);
+        self.counter = self.counter.wrapping_add(1);
+        let payload = [nwk::CMD_REJOIN_REQUEST, mac::CAPABILITY_MAINS_END_DEVICE];
+        nwk::build_secured(
+            &mut out,
+            nwk::Header {
+                frame_type: nwk::FRAME_TYPE_COMMAND,
+                dst: parent_short,
+                src: self.radio.short_address,
+                radius: 1,
+                seq: self.nwk_seq,
+                src_ieee: Some(ieee),
+            },
+            &key,
+            self.key_sequence,
+            self.counter,
+            ieee,
+            &payload,
+        );
+
+        let len = out.len();
+        self.enqueue(&buffer[..len], true);
+    }
+
+    fn on_rejoin_response(&mut self, response: nwk::RejoinResponse, source: u16, now: Instant) {
+        if !matches!(self.phase, Phase::Rejoining { .. }) {
+            return;
+        }
+        if response.status != REJOIN_ACCEPTED {
+            return;
+        }
+
+        self.radio.short_address = response.short_address;
+        self.parent = source;
+        self.consecutive_failures = 0;
+        self.next_keepalive = now.plus_millis(KEEPALIVE_MS);
+        self.phase = Phase::Joined;
+        self.remember();
+        self.announce();
+        let short_address = self.radio.short_address;
+        self.emit(Event::Joined { short_address });
+    }
+
     fn restart_scan(&mut self, now: Instant) {
         self.radio.pan_id = UNASSIGNED;
         self.radio.short_address = UNASSIGNED;
@@ -720,6 +857,12 @@ impl Device {
 
 impl Device {
     fn on_beacon(&mut self, beacon: mac::Beacon, now: Instant) {
+        if matches!(self.phase, Phase::Rejoining { .. }) {
+            if beacon.pan_id == self.radio.pan_id && beacon.end_device_capacity {
+                self.send_rejoin_request(beacon.source);
+            }
+            return;
+        }
         if !matches!(self.phase, Phase::Scanning { .. }) {
             return;
         }
@@ -791,8 +934,16 @@ impl Device {
         };
 
         if frame_type == nwk::FRAME_TYPE_COMMAND {
-            if frame[offset] == nwk::CMD_LEAVE {
-                self.restart_scan(now);
+            match frame[offset] {
+                nwk::CMD_LEAVE => self.restart_scan(now),
+                nwk::CMD_REJOIN_RESPONSE => {
+                    if let Some(response) =
+                        nwk::parse_rejoin_response(&frame[offset..offset + payload_len])
+                    {
+                        self.on_rejoin_response(response, source, now);
+                    }
+                }
+                _ => {}
             }
             return;
         }
@@ -938,5 +1089,97 @@ impl Device {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rejoining() -> Device {
+        let mut device = Device::new(Config::new(0x0011_2233_4455_6677));
+        device.network_key = Some([0x11; KEY_LEN]);
+        device.radio.pan_id = 0xa269;
+        device.radio.short_address = 0x4560;
+        device.radio.channel = 20;
+        device.parent = 0x1234;
+        device.phase = Phase::Joined;
+        device.start_rejoin(Instant::from_millis(0));
+        device
+    }
+
+    #[test]
+    fn an_accepted_rejoin_adopts_the_new_address_and_parent() {
+        let mut device = rejoining();
+
+        device.on_rejoin_response(
+            nwk::RejoinResponse {
+                short_address: 0x7ace,
+                status: REJOIN_ACCEPTED,
+            },
+            0x5678,
+            Instant::from_millis(100),
+        );
+
+        assert!(device.joined());
+        assert_eq!(device.radio().short_address, 0x7ace);
+        assert_eq!(device.parent, 0x5678);
+    }
+
+    #[test]
+    fn a_refused_rejoin_keeps_looking() {
+        let mut device = rejoining();
+
+        device.on_rejoin_response(
+            nwk::RejoinResponse {
+                short_address: 0x7ace,
+                status: 0x01,
+            },
+            0x5678,
+            Instant::from_millis(100),
+        );
+
+        assert!(!device.joined());
+        assert_eq!(device.radio().short_address, 0x4560);
+    }
+
+    #[test]
+    fn an_accepted_rejoin_offers_credentials_worth_keeping() {
+        let mut device = rejoining();
+
+        device.on_rejoin_response(
+            nwk::RejoinResponse {
+                short_address: 0x7ace,
+                status: REJOIN_ACCEPTED,
+            },
+            0x5678,
+            Instant::from_millis(100),
+        );
+
+        let mut saved = None;
+        while let Some(event) = device.next_event() {
+            if let Event::CredentialsChanged(credentials) = event {
+                saved = Some(credentials);
+            }
+        }
+        let saved = saved.expect("a new parent has to survive a reboot");
+        assert_eq!(saved.short_address(), 0x7ace);
+        assert_eq!(saved.channel(), 20);
+    }
+
+    #[test]
+    fn a_rejoin_response_outside_a_rejoin_is_ignored() {
+        let mut device = Device::new(Config::new(1));
+
+        device.on_rejoin_response(
+            nwk::RejoinResponse {
+                short_address: 0x7ace,
+                status: REJOIN_ACCEPTED,
+            },
+            0x5678,
+            Instant::from_millis(0),
+        );
+
+        assert!(!device.joined());
     }
 }

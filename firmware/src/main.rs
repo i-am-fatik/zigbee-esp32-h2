@@ -89,9 +89,20 @@ fn main() -> ! {
             tuning = wanted;
         }
 
-        while let Some(outgoing) = device.next_transmission() {
-            if !radio.send(outgoing.frame, outgoing.request_cca) {
+        #[expect(
+            clippy::while_let_loop,
+            reason = "a while let would hold the borrow across transmission_failed"
+        )]
+        loop {
+            let delivered = match device.next_transmission() {
+                Some(outgoing) => radio.send(outgoing.frame, outgoing.request_cca),
+                None => break,
+            };
+            if delivered {
+                device.transmission_delivered();
+            } else {
                 println!("radio: gave up transmitting");
+                device.transmission_failed(now());
             }
         }
 

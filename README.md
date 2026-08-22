@@ -18,6 +18,13 @@ The device scans channels 11 to 26, joins the first Zigbee PRO network that
 accepts it, and answers the coordinator as an On/Off light. Credentials go to
 flash, so a reboot or a firmware update rejoins without pairing again.
 
+A parent that stops answering is the other way to lose the network, and it is
+recovered without a reboot. The device polls its parent once a minute, and three
+refused frames in a row send it looking for another router on the same network.
+That search needs no permit-join, because a device holding the network key is a
+member rather than a stranger. Only when no router answers does it fall back to
+scanning for a new network.
+
 ```sh
 cargo test -p zigbee --target aarch64-apple-darwin
 ```

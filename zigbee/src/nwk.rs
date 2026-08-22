@@ -8,6 +8,8 @@ pub const FRAME_TYPE_DATA: u16 = 0;
 pub const FRAME_TYPE_COMMAND: u16 = 1;
 
 pub const CMD_LEAVE: u8 = 0x04;
+pub const CMD_REJOIN_REQUEST: u8 = 0x06;
+pub const CMD_REJOIN_RESPONSE: u8 = 0x07;
 
 pub const DEFAULT_RADIUS: u8 = 30;
 
@@ -131,6 +133,22 @@ pub fn parse(input: &[u8]) -> Option<Frame> {
         src,
         secured: fcf & FCF_SECURITY != 0,
         header_len,
+    })
+}
+
+pub struct RejoinResponse {
+    pub short_address: u16,
+    pub status: u8,
+}
+
+pub fn parse_rejoin_response(body: &[u8]) -> Option<RejoinResponse> {
+    let mut r = Reader::new(body);
+    if r.u8()? != CMD_REJOIN_RESPONSE {
+        return None;
+    }
+    Some(RejoinResponse {
+        short_address: r.u16()?,
+        status: r.u8()?,
     })
 }
 
