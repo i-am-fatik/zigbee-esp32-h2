@@ -1,0 +1,21 @@
+[package]
+name = "zigbee-h2"
+version = "0.1.0"
+description = "A Zigbee light on the ESP32-H2, running the zigbee crate on bare metal"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zigbee = { path = "../zigbee" }
+esp-hal = { version = "1.1.2", features = ["esp32h2", "unstable"] }
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32h2"] }
+esp-println = { version = "0.17.0", features = ["esp32h2", "log-04"] }
+esp-backtrace = { version = "0.19.0", features = ["esp32h2", "panic-handler", "println"] }
+esp-radio = { version = "1.0.0-beta.0", features = ["esp32h2", "ieee802154", "unstable"] }
+esp-alloc = "0.10.0"
+esp-storage = { version = "0.9.0", features = ["esp32h2", "critical-section"] }
+embedded-storage = "0.3.1"
+log = "0.4"
+
+[build-dependencies]
+esp-config = { version = "0.5.0", features = ["build"] }
