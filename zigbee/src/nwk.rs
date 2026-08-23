@@ -87,7 +87,10 @@ pub fn build_secured(
 
     let mut authenticated = [0u8; 64];
     let authenticated_len = out.len() - start;
-    authenticated[..authenticated_len].copy_from_slice(&out.written()[start..]);
+    let Some(written) = out.written() else {
+        return;
+    };
+    authenticated[..authenticated_len].copy_from_slice(&written[start..]);
 
     let mut body = [0u8; 96];
     body[..payload.len()].copy_from_slice(payload);
@@ -173,7 +176,7 @@ pub fn unsecure(frame: &mut [u8], aux_start: usize, key: &[u8; KEY_LEN]) -> Opti
     let source = r.u64()?;
 
     let authenticated_len = aux_start + AUX_LEN;
-    let mut authenticated = [0u8; 64];
+    let mut authenticated = [0u8; crate::mac::MAX_FRAME];
     authenticated[..authenticated_len].copy_from_slice(&frame[..authenticated_len]);
     authenticated[aux_start] = security_control;
 

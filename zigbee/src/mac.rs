@@ -1,5 +1,9 @@
 use crate::buf::{Reader, Writer};
 
+/// The longest MAC frame IEEE 802.15.4 allows, counted the way this crate
+/// counts frames: without the physical length byte and without the checksum.
+pub const MAX_FRAME: usize = 127;
+
 pub const BROADCAST_PAN: u16 = 0xffff;
 pub const BROADCAST_SHORT: u16 = 0xffff;
 

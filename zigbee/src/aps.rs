@@ -147,7 +147,7 @@ pub fn unsecure(frame: &mut [u8], aux_start: usize, key: &[u8; KEY_LEN]) -> Opti
     let aux_len = frame[aux_start..].len() - r.remaining();
 
     let authenticated_len = aux_start + aux_len;
-    let mut authenticated = [0u8; 32];
+    let mut authenticated = [0u8; crate::mac::MAX_FRAME];
     authenticated[..authenticated_len].copy_from_slice(&frame[..authenticated_len]);
     authenticated[aux_start] = security_control;
 

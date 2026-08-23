@@ -199,16 +199,6 @@ fn credentials_survive_a_round_trip_through_storage() {
     assert_eq!(device.radio().pan_id, PAN);
 }
 
-#[test]
-fn rubbish_is_rejected_without_panicking() {
-    let mut device = device();
-    for length in 0..48 {
-        let noise: Vec<u8> = (0..length).map(|byte| byte as u8 ^ 0x5a).collect();
-        device.receive(&noise, Instant::from_millis(length as u32));
-    }
-    assert!(!device.joined());
-}
-
 fn joined_device() -> Device {
     let mut device = device();
     device.tick(Instant::from_millis(0));

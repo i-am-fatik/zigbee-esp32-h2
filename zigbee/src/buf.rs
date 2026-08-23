@@ -1,17 +1,22 @@
+/// Fills a caller-supplied buffer, and remembers if the caller supplied one
+/// too small rather than writing past the end of it.
 pub struct Writer<'a> {
     buf: &'a mut [u8],
     pos: usize,
+    ran_out: bool,
 }
 
 impl<'a> Writer<'a> {
     pub fn new(buf: &'a mut [u8]) -> Self {
-        Self { buf, pos: 0 }
+        Self {
+            buf,
+            pos: 0,
+            ran_out: false,
+        }
     }
 
     pub fn u8(&mut self, v: u8) -> &mut Self {
-        self.buf[self.pos] = v;
-        self.pos += 1;
-        self
+        self.bytes(&[v])
     }
 
     pub fn u16(&mut self, v: u16) -> &mut Self {
@@ -27,8 +32,13 @@ impl<'a> Writer<'a> {
     }
 
     pub fn bytes(&mut self, v: &[u8]) -> &mut Self {
-        self.buf[self.pos..self.pos + v.len()].copy_from_slice(v);
-        self.pos += v.len();
+        match self.buf.get_mut(self.pos..self.pos + v.len()) {
+            Some(room) => {
+                room.copy_from_slice(v);
+                self.pos += v.len();
+            }
+            None => self.ran_out = true,
+        }
         self
     }
 
@@ -36,8 +46,13 @@ impl<'a> Writer<'a> {
         self.pos
     }
 
-    pub fn written(&self) -> &[u8] {
-        &self.buf[..self.pos]
+    /// What was written, or nothing at all when it did not fit. A partial
+    /// frame is never worth sending, so the caller cannot reach one.
+    pub fn written(&self) -> Option<&[u8]> {
+        if self.ran_out {
+            return None;
+        }
+        Some(&self.buf[..self.pos])
     }
 }
 
@@ -96,7 +111,10 @@ impl<'a> Reader<'a> {
 
 impl<'a> Writer<'a> {
     pub fn set(&mut self, pos: usize, value: u8) {
-        self.buf[pos] = value;
+        match self.buf.get_mut(pos) {
+            Some(slot) => *slot = value,
+            None => self.ran_out = true,
+        }
     }
 
     pub fn truncate(&mut self, pos: usize) {

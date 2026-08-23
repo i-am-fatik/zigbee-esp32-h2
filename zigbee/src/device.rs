@@ -28,7 +28,6 @@ const REJOIN_ACCEPTED: u8 = 0x00;
 const COUNTER_MARGIN: u32 = 1024;
 
 const UNASSIGNED: u16 = 0xffff;
-const FRAME_CAPACITY: usize = 127;
 const OUTBOX_CAPACITY: usize = 4;
 const EVENT_CAPACITY: usize = 4;
 
@@ -249,7 +248,7 @@ impl<T: Copy, const N: usize> Queue<T, N> {
 
 #[derive(Clone, Copy)]
 struct Outgoing {
-    frame: [u8; FRAME_CAPACITY],
+    frame: [u8; mac::MAX_FRAME],
     len: u8,
     request_cca: bool,
 }
@@ -310,7 +309,7 @@ impl Device {
             consecutive_failures: 0,
             next_keepalive: Instant::from_millis(KEEPALIVE_MS),
             outbox: Queue::new(Outgoing {
-                frame: [0; FRAME_CAPACITY],
+                frame: [0; mac::MAX_FRAME],
                 len: 0,
                 request_cca: false,
             }),
@@ -416,13 +415,14 @@ impl Device {
     /// Hands the stack a MAC frame the radio received, without the physical
     /// length byte and without the checksum.
     pub fn receive(&mut self, frame: &[u8], now: Instant) {
+        if frame.len() > mac::MAX_FRAME {
+            return;
+        }
         let Some(parsed) = mac::parse(frame) else {
             return;
         };
-        let frame_type = parsed.frame_type;
-        let payload_start = frame.len() - parsed.payload.len();
 
-        match frame_type {
+        match parsed.frame_type {
             mac::FRAME_TYPE_BEACON => {
                 if let Some(beacon) = mac::parse_beacon(&parsed) {
                     self.on_beacon(beacon, now);
@@ -434,10 +434,10 @@ impl Device {
                 }
             }
             mac::FRAME_TYPE_DATA => {
-                let mut network = [0u8; 128];
-                let len = frame.len() - payload_start;
-                network[..len].copy_from_slice(&frame[payload_start..]);
-                self.on_network_frame(&mut network, len, now);
+                let payload_len = parsed.payload.len();
+                let mut network = [0u8; mac::MAX_FRAME];
+                network[..payload_len].copy_from_slice(parsed.payload);
+                self.on_network_frame(&mut network[..payload_len], now);
             }
             _ => {}
         }
@@ -539,7 +539,7 @@ impl Device {
 
     fn enqueue(&mut self, frame: &[u8], request_cca: bool) {
         let mut outgoing = Outgoing {
-            frame: [0; FRAME_CAPACITY],
+            frame: [0; mac::MAX_FRAME],
             len: frame.len() as u8,
             request_cca,
         };
@@ -582,26 +582,30 @@ impl Device {
     }
 
     fn send_beacon_request(&mut self) {
-        let mut buffer = [0u8; FRAME_CAPACITY];
+        let mut buffer = [0u8; mac::MAX_FRAME];
         let seq = self.next_mac_seq();
         let mut out = Writer::new(&mut buffer);
         mac::beacon_request(&mut out, seq);
-        let len = out.len();
-        self.enqueue(&buffer[..len], true);
+        let Some(frame) = out.written() else {
+            return;
+        };
+        self.enqueue(frame, true);
     }
 
     fn send_association_request(&mut self, candidate: &Candidate) {
-        let mut buffer = [0u8; FRAME_CAPACITY];
+        let mut buffer = [0u8; mac::MAX_FRAME];
         let seq = self.next_mac_seq();
         let ieee = self.config.ieee;
         let mut out = Writer::new(&mut buffer);
         mac::association_request(&mut out, seq, candidate.pan_id, candidate.parent, ieee);
-        let len = out.len();
-        self.enqueue(&buffer[..len], true);
+        let Some(frame) = out.written() else {
+            return;
+        };
+        self.enqueue(frame, true);
     }
 
     fn send_data_request(&mut self, pan_id: u16, parent: mac::Addr) {
-        let mut buffer = [0u8; FRAME_CAPACITY];
+        let mut buffer = [0u8; mac::MAX_FRAME];
         let seq = self.next_mac_seq();
         let us = if self.radio.short_address == UNASSIGNED {
             mac::Addr::Extended(self.config.ieee)
@@ -610,8 +614,10 @@ impl Device {
         };
         let mut out = Writer::new(&mut buffer);
         mac::data_request(&mut out, seq, pan_id, parent, us);
-        let len = out.len();
-        self.enqueue(&buffer[..len], true);
+        let Some(frame) = out.written() else {
+            return;
+        };
+        self.enqueue(frame, true);
     }
 
     fn send_application(&mut self, nwk_dst: u16, aps_frame: &[u8]) {
@@ -625,7 +631,7 @@ impl Device {
             mac::Addr::Short(self.parent)
         };
 
-        let mut buffer = [0u8; FRAME_CAPACITY];
+        let mut buffer = [0u8; mac::MAX_FRAME];
         let mac_seq = self.next_mac_seq();
         let ieee = self.config.ieee;
         let mut out = Writer::new(&mut buffer);
@@ -657,8 +663,10 @@ impl Device {
             aps_frame,
         );
 
-        let len = out.len();
-        self.enqueue(&buffer[..len], !broadcast);
+        let Some(frame) = out.written() else {
+            return;
+        };
+        self.enqueue(frame, !broadcast);
 
         if self.counter >= self.counter_persisted {
             self.remember();
@@ -690,16 +698,20 @@ impl Device {
             },
             payload,
         );
-        let len = out.len();
-        self.send_application(nwk_dst, &frame[..len]);
+        let Some(aps_frame) = out.written() else {
+            return;
+        };
+        self.send_application(nwk_dst, aps_frame);
     }
 
     fn acknowledge(&mut self, nwk_dst: u16, request: &aps::Data) {
         let mut frame = [0u8; 32];
         let mut out = Writer::new(&mut frame);
         aps::build_ack(&mut out, request);
-        let len = out.len();
-        self.send_application(nwk_dst, &frame[..len]);
+        let Some(aps_frame) = out.written() else {
+            return;
+        };
+        self.send_application(nwk_dst, aps_frame);
     }
 
     fn announce(&mut self) {
@@ -709,7 +721,9 @@ impl Device {
         let ieee = self.config.ieee;
         let mut body = Writer::new(&mut payload);
         zdo::device_announce(&mut body, seq, short, ieee, mac::CAPABILITY_MAINS_END_DEVICE);
-        let body_len = body.len();
+        let Some(announcement) = body.written() else {
+            return;
+        };
 
         let mut frame = [0u8; 64];
         let counter = self.next_aps_counter();
@@ -725,10 +739,12 @@ impl Device {
                 ack_request: false,
                 broadcast: true,
             },
-            &payload[..body_len],
+            announcement,
         );
-        let len = out.len();
-        self.send_application(nwk::BROADCAST_RX_ON_WHEN_IDLE, &frame[..len]);
+        let Some(aps_frame) = out.written() else {
+            return;
+        };
+        self.send_application(nwk::BROADCAST_RX_ON_WHEN_IDLE, aps_frame);
     }
 
     fn report_on_off(&mut self) {
@@ -737,14 +753,16 @@ impl Device {
         let on = self.application.on;
         let mut body = Writer::new(&mut payload);
         zcl::report_on_off(&mut body, seq, on);
-        let body_len = body.len();
+        let Some(report) = body.written() else {
+            return;
+        };
         self.send_aps_data(
             nwk::COORDINATOR,
             1,
             zdo::ENDPOINT,
             zdo::CLUSTER_ON_OFF,
             aps::PROFILE_HOME_AUTOMATION,
-            &payload[..body_len],
+            report,
         );
     }
 
@@ -786,7 +804,7 @@ impl Device {
             _ => return,
         };
 
-        let mut buffer = [0u8; FRAME_CAPACITY];
+        let mut buffer = [0u8; mac::MAX_FRAME];
         let mac_seq = self.next_mac_seq();
         let ieee = self.config.ieee;
         let mut out = Writer::new(&mut buffer);
@@ -819,8 +837,10 @@ impl Device {
             &payload,
         );
 
-        let len = out.len();
-        self.enqueue(&buffer[..len], true);
+        let Some(frame) = out.written() else {
+            return;
+        };
+        self.enqueue(frame, true);
     }
 
     fn on_rejoin_response(&mut self, response: nwk::RejoinResponse, source: u16, now: Instant) {
@@ -909,8 +929,8 @@ impl Device {
         };
     }
 
-    fn on_network_frame(&mut self, frame: &mut [u8; 128], len: usize, now: Instant) {
-        let Some(parsed) = nwk::parse(&frame[..len]) else {
+    fn on_network_frame(&mut self, frame: &mut [u8], now: Instant) {
+        let Some(parsed) = nwk::parse(frame) else {
             return;
         };
         let (frame_type, source, secured, header_len, broadcast) = (
@@ -921,25 +941,26 @@ impl Device {
             parsed.dst >= 0xfff8,
         );
 
-        let (offset, payload_len) = if secured {
+        let payload_range = if secured {
             let Some(key) = self.network_key else {
                 return;
             };
-            let Some(unsecured) = nwk::unsecure(&mut frame[..len], header_len, &key) else {
+            let Some(unsecured) = nwk::unsecure(frame, header_len, &key) else {
                 return;
             };
-            (unsecured.offset, unsecured.len)
+            unsecured.offset..unsecured.offset + unsecured.len
         } else {
-            (header_len, len - header_len)
+            header_len..frame.len()
+        };
+        let Some(payload) = frame.get_mut(payload_range) else {
+            return;
         };
 
         if frame_type == nwk::FRAME_TYPE_COMMAND {
-            match frame[offset] {
-                nwk::CMD_LEAVE => self.restart_scan(now),
-                nwk::CMD_REJOIN_RESPONSE => {
-                    if let Some(response) =
-                        nwk::parse_rejoin_response(&frame[offset..offset + payload_len])
-                    {
+            match payload.first() {
+                Some(&nwk::CMD_LEAVE) => self.restart_scan(now),
+                Some(&nwk::CMD_REJOIN_RESPONSE) => {
+                    if let Some(response) = nwk::parse_rejoin_response(payload) {
                         self.on_rejoin_response(response, source, now);
                     }
                 }
@@ -948,20 +969,11 @@ impl Device {
             return;
         }
 
-        let mut application = [0u8; 128];
-        application[..payload_len].copy_from_slice(&frame[offset..offset + payload_len]);
-        self.on_application_frame(source, broadcast, &mut application, payload_len, now);
+        self.on_application_frame(source, broadcast, payload, now);
     }
 
-    fn on_application_frame(
-        &mut self,
-        source: u16,
-        broadcast: bool,
-        frame: &mut [u8; 128],
-        len: usize,
-        now: Instant,
-    ) {
-        let Some(parsed) = aps::parse(&frame[..len]) else {
+    fn on_application_frame(&mut self, source: u16, broadcast: bool, frame: &mut [u8], now: Instant) {
+        let Some(parsed) = aps::parse(frame) else {
             return;
         };
 
@@ -971,27 +983,20 @@ impl Device {
                 let (secured, header_len) = (command.secured, command.header_len);
                 let body_range = if secured {
                     let key = self.transport_key;
-                    let Some(unsecured) = aps::unsecure(&mut frame[..len], header_len, &key) else {
+                    let Some(unsecured) = aps::unsecure(frame, header_len, &key) else {
                         return;
                     };
                     unsecured.offset..unsecured.offset + unsecured.len
                 } else {
-                    header_len..len
+                    header_len..frame.len()
                 };
-                let mut body = [0u8; 64];
-                let body_len = body_range.len();
-                body[..body_len].copy_from_slice(&frame[body_range]);
-                self.on_transport_key(&body[..body_len]);
+                let Some(body) = frame.get(body_range) else {
+                    return;
+                };
+                self.on_transport_key(body);
             }
             aps::Frame::Data(data) => {
-                let mut payload = [0u8; 96];
-                let payload_len = data.payload.len();
-                payload[..payload_len].copy_from_slice(data.payload);
-                let request = aps::Data {
-                    payload: &[],
-                    ..data
-                };
-                self.on_application_data(source, broadcast, &request, &payload[..payload_len], now);
+                self.on_application_data(source, broadcast, &data, now);
             }
         }
     }
@@ -1016,14 +1021,7 @@ impl Device {
         self.emit(Event::Joined { short_address });
     }
 
-    fn on_application_data(
-        &mut self,
-        source: u16,
-        broadcast: bool,
-        request: &aps::Data,
-        payload: &[u8],
-        now: Instant,
-    ) {
+    fn on_application_data(&mut self, source: u16, broadcast: bool, request: &aps::Data, now: Instant) {
         if request.ack_request && !broadcast {
             self.acknowledge(source, request);
         }
@@ -1035,7 +1033,7 @@ impl Device {
                 let Some(response) = zdo::respond(
                     &mut out,
                     request.cluster,
-                    payload,
+                    request.payload,
                     self.radio.short_address,
                     self.config.ieee,
                     mac::CAPABILITY_MAINS_END_DEVICE,
@@ -1043,14 +1041,16 @@ impl Device {
                 ) else {
                     return;
                 };
-                let len = out.len();
+                let Some(body) = out.written() else {
+                    return;
+                };
                 self.send_aps_data(
                     source,
                     0,
                     0,
                     response.cluster,
                     aps::PROFILE_ZDO,
-                    &reply[..len],
+                    body,
                 );
             }
             aps::PROFILE_HOME_AUTOMATION if !broadcast => {
@@ -1064,21 +1064,19 @@ impl Device {
                 let outcome = zcl::handle(
                     &mut out,
                     request.cluster,
-                    payload,
+                    request.payload,
                     &mut self.application,
                     &identity,
                     now,
                 );
-                let len = out.len();
-
-                if outcome.has_reply {
+                if let (true, Some(body)) = (outcome.has_reply, out.written()) {
                     self.send_aps_data(
                         source,
                         request.src_endpoint,
                         zdo::ENDPOINT,
                         request.cluster,
                         aps::PROFILE_HOME_AUTOMATION,
-                        &reply[..len],
+                        body,
                     );
                 }
                 if outcome.state_changed {
