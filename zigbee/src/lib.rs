@@ -165,6 +165,17 @@ pub const APPLICATION: Application = Application {
 /// is reserved for "undefined", so the usable range stops one short of it.
 pub const MAX_LEVEL: u8 = zcl::MAX_LEVEL;
 
+/// The install code as it is printed on a device: the sixteen secret octets
+/// followed by the checksum a coordinator expects after them.
+///
+/// This is what goes into the coordinator out of band, by hand or by QR code,
+/// before a device configured with [`Config::with_install_code`] will join.
+pub fn install_code_label(
+    code: &[u8; crypto::INSTALL_CODE_LEN],
+) -> [u8; crypto::INSTALL_CODE_LABEL_LEN] {
+    crypto::install_code_label(code)
+}
+
 /// The furthest round the colour wheel a hue goes before it comes back to
 /// where it started.
 pub const MAX_HUE: u8 = zcl::MAX_HUE;

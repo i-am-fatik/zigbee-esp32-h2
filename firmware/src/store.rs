@@ -11,6 +11,8 @@ use zigbee::{Credentials, Tables};
 /// The two records get a sector each, because they change at different times.
 const CREDENTIALS: u32 = 0x9000;
 const TABLES: u32 = 0xa000;
+const INSTALL_CODE: u32 = 0xb000;
+const INSTALL_CODE_LEN: usize = 16;
 const SECTOR: u32 = 4096;
 const WORD: u32 = 4;
 
@@ -56,6 +58,16 @@ impl Store {
     pub fn forget(&mut self) {
         let _ = self.flash.erase(CREDENTIALS, CREDENTIALS + SECTOR);
         let _ = self.flash.erase(TABLES, TABLES + SECTOR);
+    }
+
+    /// The install code this device was given when it was provisioned.
+    ///
+    /// It is never written from here and [`Store::forget`] leaves it alone,
+    /// because it belongs to the device rather than to any one network. Erased
+    /// flash reads back as no code, which is a device that joins the old way.
+    pub fn load_install_code(&mut self) -> Option<[u8; INSTALL_CODE_LEN]> {
+        let code: [u8; INSTALL_CODE_LEN] = self.read(INSTALL_CODE)?;
+        (code != [0xff; INSTALL_CODE_LEN]).then_some(code)
     }
 
     /// Starts an update by forgetting whatever a previous one left behind. The

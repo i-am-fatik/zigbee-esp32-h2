@@ -11,7 +11,7 @@ mod store;
 use esp_backtrace as _;
 use esp_hal::main;
 use esp_hal::time::Instant as HalInstant;
-use esp_println::println;
+use esp_println::{print, println};
 use esp_radio::ieee802154::Ieee802154;
 use zigbee::{Colour, Config, Device, Event, Instant};
 
@@ -65,14 +65,23 @@ fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
     esp_alloc::heap_allocator!(size: 32 * 1024);
 
+    let mut store = Store::new(peripherals.FLASH);
+
     let ieee = our_extended_address();
-    let config = Config::new(ieee)
+    let mut config = Config::new(ieee)
         .with_manufacturer("esp-rs")
         .with_model("H2.NoStd.Light")
         .with_software_build(env!("CARGO_PKG_VERSION"))
         .with_firmware(MANUFACTURER_CODE, IMAGE_TYPE, FIRMWARE_VERSION);
 
-    let mut store = Store::new(peripherals.FLASH);
+    if let Some(code) = store.load_install_code() {
+        config = config.with_install_code(code);
+        print!("store: install code ");
+        for octet in zigbee::install_code_label(&code) {
+            print!("{:02X}", octet);
+        }
+        println!();
+    }
     let mut device = match store.load() {
         Some(credentials) => {
             println!(

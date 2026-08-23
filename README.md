@@ -123,6 +123,44 @@ complete.
 An update that is interrupted leaves the running slot untouched, because the
 bootloader is only pointed at the new one after the last block.
 
+## Pairing without letting the neighbours listen
+
+The device joins under the link key printed in the Zigbee specification, so a
+radio listening during pairing reads the network key and keeps it. An install
+code closes that, and it lives in flash rather than in this repository, because
+a secret in a public repository is not one.
+
+```sh
+openssl rand 16 > install-code.bin
+espflash write-bin --port /dev/cu.usbmodem101 0xb000 install-code.bin
+```
+
+The device prints the code and its checksum on the console at every boot:
+
+```
+store: install code 83FED3407A939723A5C639B26916D505C3B5
+```
+
+Give that whole string to the bridge before pairing, by publishing to
+`zigbee2mqtt/bridge/request/install_code/add`. The same value comes out of a
+host without the board attached:
+
+```sh
+cargo run -p zigbee-rs --example install-code --target aarch64-apple-darwin -- \
+    $(xxd -p install-code.bin)
+```
+
+A device whose code the coordinator does not know never finishes joining, so add
+it to the bridge first. Erasing the sector puts the device back to joining the
+old way, and `espflash erase-region` on the network sectors leaves the code
+alone, because it belongs to the device rather than to any one network.
+
+| Sector | Holds |
+| --- | --- |
+| 0x9000 | network credentials, erased on leaving |
+| 0xa000 | groups and scenes, erased on leaving |
+| 0xb000 | install code, never erased from firmware |
+
 ## To forget a network
 
 ```sh

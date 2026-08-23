@@ -1,10 +1,20 @@
 use crate::buf::Writer;
-use crate::crypto::{key_transport_key, KEY_LEN};
+use crate::crypto::{install_code_link_key, key_transport_key, INSTALL_CODE_LEN, KEY_LEN};
 use crate::{aps, mac, nwk, ota, zcl, zdo, Instant, CHANNELS};
 
 /// The link key every Zigbee device is allowed to fall back to when it joins a
 /// centralised network without an install code.
 const DEFAULT_TRUST_CENTRE_LINK_KEY: [u8; KEY_LEN] = *b"ZigBeeAlliance09";
+
+/// The key the join is protected by: derived from this device's install code
+/// when it has one, and otherwise the one printed in the specification, which
+/// everybody already has.
+fn link_key(config: &Config) -> [u8; KEY_LEN] {
+    match config.install_code {
+        Some(code) => install_code_link_key(&code),
+        None => DEFAULT_TRUST_CENTRE_LINK_KEY,
+    }
+}
 
 const ASSOCIATION_ACCEPTED: u8 = 0x00;
 const STACK_PROFILE_ZIGBEE_PRO: u8 = 2;
@@ -32,13 +42,26 @@ const OUTBOX_CAPACITY: usize = 4;
 const EVENT_CAPACITY: usize = 4;
 
 /// What the device tells the world about itself during the interview.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Config {
     ieee: u64,
     manufacturer: &'static str,
     model: &'static str,
     software_build: &'static str,
     firmware: Option<ota::Identity>,
+    install_code: Option<[u8; INSTALL_CODE_LEN]>,
+}
+
+impl core::fmt::Debug for Config {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Config")
+            .field("ieee", &self.ieee)
+            .field("manufacturer", &self.manufacturer)
+            .field("model", &self.model)
+            .field("software_build", &self.software_build)
+            .field("firmware", &self.firmware)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Config {
@@ -51,6 +74,7 @@ impl Config {
             model: "zigbee-rs",
             software_build: "0.1.0",
             firmware: None,
+            install_code: None,
         }
     }
 
@@ -72,6 +96,21 @@ impl Config {
     /// Sets the software build identifier reported by the Basic cluster.
     pub const fn with_software_build(mut self, software_build: &'static str) -> Self {
         self.software_build = software_build;
+        self
+    }
+
+    /// Takes the install code printed on this device, so the trust centre can
+    /// send the network key under a key nobody else knows.
+    ///
+    /// Without one the join is protected by the link key published in the
+    /// specification, which means anyone listening at the moment of pairing
+    /// reads the network key. With one, the coordinator has to be told the same
+    /// code out of band before it will let the device in.
+    ///
+    /// The code is a secret and the `Debug` output omits it. Its printed form,
+    /// checksum included, comes from [`crate::install_code_label`].
+    pub const fn with_install_code(mut self, code: [u8; INSTALL_CODE_LEN]) -> Self {
+        self.install_code = Some(code);
         self
     }
 
@@ -531,7 +570,7 @@ impl Device {
                 listen_until: Instant::from_millis(0),
             },
             application: zcl::State::default(),
-            transport_key: key_transport_key(&DEFAULT_TRUST_CENTRE_LINK_KEY),
+            transport_key: key_transport_key(&link_key(&config)),
             counter: 0,
             counter_persisted: 0,
             mac_seq: 0,

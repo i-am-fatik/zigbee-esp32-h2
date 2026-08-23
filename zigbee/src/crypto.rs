@@ -107,3 +107,84 @@ fn hmac_aes_mmo(key: &[u8; KEY_LEN], message: &[u8]) -> [u8; KEY_LEN] {
 pub fn key_transport_key(link_key: &[u8; KEY_LEN]) -> [u8; KEY_LEN] {
     hmac_aes_mmo(link_key, &[0x00])
 }
+
+pub const INSTALL_CODE_LEN: usize = 16;
+pub const INSTALL_CODE_LABEL_LEN: usize = INSTALL_CODE_LEN + 2;
+
+/// CRC-16/X-25 over an install code, which exists so that a person copying the
+/// code off a label catches their own mistake rather than a failed join.
+fn install_code_crc(code: &[u8; INSTALL_CODE_LEN]) -> u16 {
+    let mut crc = 0xffffu16;
+    for byte in code {
+        crc ^= *byte as u16;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0x8408
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+/// The install code as it is printed on a device: the code, then its checksum
+/// in the order a coordinator reads them.
+pub fn install_code_label(code: &[u8; INSTALL_CODE_LEN]) -> [u8; INSTALL_CODE_LABEL_LEN] {
+    let mut label = [0u8; INSTALL_CODE_LABEL_LEN];
+    label[..INSTALL_CODE_LEN].copy_from_slice(code);
+    label[INSTALL_CODE_LEN..].copy_from_slice(&install_code_crc(code).to_le_bytes());
+    label
+}
+
+/// The link key a trust centre derives from an install code, which is what
+/// takes the place of the key everybody already knows.
+pub fn install_code_link_key(code: &[u8; INSTALL_CODE_LEN]) -> [u8; KEY_LEN] {
+    aes_mmo(&install_code_label(code))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The worked example from the specification, which is the only way to know
+    /// the checksum, its order and the hash are all right at once.
+    const PUBLISHED_CODE: [u8; INSTALL_CODE_LEN] = [
+        0x83, 0xfe, 0xd3, 0x40, 0x7a, 0x93, 0x97, 0x23, 0xa5, 0xc6, 0x39, 0xb2, 0x69, 0x16, 0xd5,
+        0x05,
+    ];
+
+    #[test]
+    fn the_published_install_code_derives_the_published_link_key() {
+        assert_eq!(
+            install_code_link_key(&PUBLISHED_CODE),
+            [
+                0x66, 0xb6, 0x90, 0x09, 0x81, 0xe1, 0xee, 0x3c, 0xa4, 0x20, 0x6b, 0x6b, 0x86, 0x1c,
+                0x02, 0xbb,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_label_ends_in_the_checksum_the_specification_prints() {
+        let label = install_code_label(&PUBLISHED_CODE);
+
+        assert_eq!(&label[..INSTALL_CODE_LEN], &PUBLISHED_CODE);
+        assert_eq!(&label[INSTALL_CODE_LEN..], &[0xc3, 0xb5]);
+    }
+
+    #[test]
+    fn one_wrong_octet_gives_a_different_checksum_and_a_different_key() {
+        let mut mistyped = PUBLISHED_CODE;
+        mistyped[7] ^= 0x01;
+
+        assert_ne!(
+            install_code_label(&mistyped)[INSTALL_CODE_LEN..],
+            install_code_label(&PUBLISHED_CODE)[INSTALL_CODE_LEN..]
+        );
+        assert_ne!(
+            install_code_link_key(&mistyped),
+            install_code_link_key(&PUBLISHED_CODE)
+        );
+    }
+}

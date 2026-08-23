@@ -46,8 +46,7 @@ coordinator will find.
 
 ## What it does not do
 
-No routing, no coordinator role, no sleepy end device, no install codes and no
-green power. Colour is hue
+No routing, no coordinator role, no sleepy end device and no green power. Colour is hue
 and saturation or a temperature, never the XY space and never an enhanced hue,
 which the capabilities attribute says out loud so a bridge converts on its own
 side. A stated transition time is parsed and ignored, so a colour or a
@@ -65,6 +64,25 @@ The group and scene tables hold four groups and eight scenes. Every change to
 either offers a `TablesChanged` event carrying the bytes to write down, and
 `Device::restore_tables` puts them back, so a light comes back from a restart
 belonging to the same groups and holding the same scenes.
+
+## Joining, and who can listen
+
+By default the trust centre sends the network key encrypted under the link key
+printed in the specification, so anyone within radio range at the moment of
+pairing reads it and holds the network from then on.
+
+`Config::with_install_code` replaces that key with one derived from sixteen
+secret octets unique to the device. The same code has to reach the coordinator
+out of band before it will let the device in, which is what turns a published
+constant into something an eavesdropper does not have.
+
+```rust
+let config = Config::new(ieee).with_install_code(code);
+let label = zigbee::install_code_label(&code);
+```
+
+The code protects the join and nothing after it. Once the device holds the
+network key, its traffic is protected exactly as it was before.
 
 ## Cryptography
 
