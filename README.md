@@ -18,6 +18,11 @@ The device scans channels 11 to 26, joins the first Zigbee PRO network that
 accepts it, and answers the coordinator as an On/Off light. Credentials go to
 flash, so a reboot or a firmware update rejoins without pairing again.
 
+The BOOT button on GPIO9 toggles the light locally, debounced over 25 ms. The
+coordinator hears about it through the same attribute report it would get from
+a switch command, so the two ways of changing the light are indistinguishable
+from outside.
+
 A parent that stops answering is the other way to lose the network, and it is
 recovered without a reboot. The device polls its parent once a minute, and three
 refused frames in a row send it looking for another router on the same network.

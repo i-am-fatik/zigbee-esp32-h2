@@ -3,6 +3,7 @@
 
 extern crate alloc;
 
+mod button;
 mod led;
 mod radio;
 mod store;
@@ -14,6 +15,7 @@ use esp_println::println;
 use esp_radio::ieee802154::Ieee802154;
 use zigbee::{Config, Device, Event, Instant};
 
+use button::Button;
 use led::{AddressableLed, Rgb};
 use radio::Radio;
 use store::Store;
@@ -69,6 +71,7 @@ fn main() -> ! {
     println!("boot: zigbee end device, eui64 {:016x}", ieee);
 
     let mut led = AddressableLed::new(peripherals.RMT, peripherals.GPIO8);
+    let mut button = Button::new(peripherals.GPIO9, now());
     let mut tuning = device.radio();
     let mut radio = Radio::new(Ieee802154::new(peripherals.IEEE802154), tuning, ieee);
 
@@ -79,6 +82,10 @@ fn main() -> ! {
         let mut received = [0u8; 128];
         while let Some(len) = radio.receive(&mut received) {
             device.receive(&received[..len], now());
+        }
+
+        if button.was_pressed(now()) {
+            device.set_on_off(!device.on_off());
         }
 
         device.tick(now());
