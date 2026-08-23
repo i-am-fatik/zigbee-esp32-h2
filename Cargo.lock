@@ -1747,12 +1747,22 @@ dependencies = [
  "esp-radio",
  "esp-storage",
  "log",
- "zigbee-rs",
+ "zigbee-rs 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
 name = "zigbee-rs"
 version = "0.1.0"
+dependencies = [
+ "aes",
+ "ccm 0.6.1",
+]
+
+[[package]]
+name = "zigbee-rs"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bdd84126015a800eda6cfe3fc719f6e7cc827337bda4b3c4b3eb286f5d47e79"
 dependencies = [
  "aes",
  "ccm 0.6.1",
