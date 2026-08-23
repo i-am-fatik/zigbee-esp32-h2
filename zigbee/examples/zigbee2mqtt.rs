@@ -15,8 +15,8 @@
 use std::collections::BTreeSet;
 
 use zigbee::{
-    APPLICATION, CLUSTER_BASIC, CLUSTER_COLOUR_CONTROL, CLUSTER_IDENTIFY, CLUSTER_LEVEL_CONTROL,
-    CLUSTER_ON_OFF, COLOUR_TEMPERATURE_MIREDS,
+    APPLICATION, CLUSTER_BASIC, CLUSTER_COLOUR_CONTROL, CLUSTER_GROUPS, CLUSTER_IDENTIFY,
+    CLUSTER_LEVEL_CONTROL, CLUSTER_ON_OFF, CLUSTER_SCENES, COLOUR_TEMPERATURE_MIREDS,
 };
 
 struct Extend {
@@ -64,7 +64,10 @@ fn extend_for(cluster: u16, dimmable: bool, colour: bool) -> Option<Extend> {
 }
 
 fn needs_no_extend_of_its_own(cluster: u16) -> bool {
-    matches!(cluster, CLUSTER_BASIC | CLUSTER_ON_OFF | CLUSTER_COLOUR_CONTROL)
+    matches!(
+        cluster,
+        CLUSTER_BASIC | CLUSTER_ON_OFF | CLUSTER_COLOUR_CONTROL | CLUSTER_GROUPS | CLUSTER_SCENES
+    )
 }
 
 struct Identity {

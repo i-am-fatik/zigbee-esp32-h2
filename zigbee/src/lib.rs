@@ -71,6 +71,10 @@
 //! [`Device::restore`] after a restart. Skipping that costs a fresh join, and
 //! a fresh join needs the coordinator to be permitting one.
 //!
+//! Do the same with [`Event::TablesChanged`] and [`Device::restore_tables`].
+//! Skipping that costs nothing at the network level, and costs a light that
+//! comes back belonging to no group and knowing no scene.
+//!
 //! # What the stack promises
 //!
 //! [`Device::receive`] accepts any bytes at all. A frame that is too long,
@@ -91,7 +95,7 @@ mod nwk;
 mod zcl;
 mod zdo;
 
-pub use device::{Colour, Config, Credentials, Device, Event, RadioConfig, Transmission};
+pub use device::{Colour, Config, Credentials, Device, Event, RadioConfig, Tables, Transmission};
 
 /// A point on a monotonic millisecond clock.
 ///
@@ -171,6 +175,10 @@ pub const COLOUR_TEMPERATURE_MIREDS: core::ops::RangeInclusive<u16> =
 pub const CLUSTER_BASIC: u16 = zdo::CLUSTER_BASIC;
 /// The Identify cluster.
 pub const CLUSTER_IDENTIFY: u16 = zdo::CLUSTER_IDENTIFY;
+/// The Groups cluster, which is how one command reaches many lights.
+pub const CLUSTER_GROUPS: u16 = zdo::CLUSTER_GROUPS;
+/// The Scenes cluster, which remembers a setting and puts it back.
+pub const CLUSTER_SCENES: u16 = zdo::CLUSTER_SCENES;
 /// The On/Off cluster.
 pub const CLUSTER_ON_OFF: u16 = zdo::CLUSTER_ON_OFF;
 /// The Level Control cluster, which carries the brightness.

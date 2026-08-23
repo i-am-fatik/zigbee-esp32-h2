@@ -295,3 +295,23 @@ fn giving_up_on_the_rejoin_falls_back_to_a_full_scan() {
         .any(|event| matches!(event, Event::Left)));
     assert_eq!(device.radio().pan_id, 0xffff);
 }
+
+/// Every cluster the light serves is listed in one simple descriptor, and a
+/// descriptor that outgrew the air would be dropped rather than truncated.
+#[test]
+fn the_interview_answer_still_fits_in_one_frame() {
+    let mut device = joined_device();
+
+    let mut application = vec![0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x07, 0x11];
+    application.extend_from_slice(&OUR_SHORT.to_le_bytes());
+    application.push(1);
+    device.receive(&deliver_unsecured(&application), Instant::from_millis(100));
+
+    let frames = drain(&mut device);
+    assert_eq!(frames.len(), 1, "the descriptor has to be answered");
+    assert!(
+        frames[0].len() <= 127,
+        "a MAC frame is 127 octets, this one is {}",
+        frames[0].len()
+    );
+}

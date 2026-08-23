@@ -37,6 +37,8 @@ coordinator will find.
 | --- | --- |
 | Basic | read the manufacturer, model, versions and build |
 | Identify | make the light announce itself, and ask how long is left |
+| Groups | join and leave groups, so one command reaches many lights at once |
+| Scenes | remember a setting and put it back, on its own or for a group |
 | On/Off | on, off, toggle, and hear about every change |
 | Level Control | set the brightness, step it, or ramp it until told to stop |
 | Colour Control | a hue and a saturation, or a colour temperature in mireds |
@@ -44,13 +46,18 @@ coordinator will find.
 ## What it does not do
 
 No routing, no coordinator role, no sleepy end device, no install codes, no
-green power, no over-the-air updates, no scenes and no groups. Colour is hue
+green power, no over-the-air updates. Colour is hue
 and saturation or a temperature, never the XY space and never an enhanced hue,
 which the capabilities attribute says out loud so a bridge converts on its own
 side. A stated transition time is parsed and ignored, so a colour or a
 brightness the coordinator asks for arrives at once rather than fading in. A
 ramp started by Move does take time, and it advances on `tick` like everything
 else in the stack. Frames it does not understand are dropped in silence.
+
+The group and scene tables hold four groups and eight scenes. Every change to
+either offers a `TablesChanged` event carrying the bytes to write down, and
+`Device::restore_tables` puts them back, so a light comes back from a restart
+belonging to the same groups and holding the same scenes.
 
 ## Cryptography
 

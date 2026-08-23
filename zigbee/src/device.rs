@@ -207,6 +207,110 @@ pub struct Transmission<'a> {
     pub request_cca: bool,
 }
 
+/// The groups the light belongs to and the scenes it can put back, in the form
+/// to hand to storage.
+///
+/// These outlive a restart only if the caller writes them down. They carry no
+/// secret, unlike [`Credentials`], so where they are kept matters less.
+#[derive(Clone, Copy)]
+pub struct Tables([u8; Tables::SIZE]);
+
+impl core::fmt::Debug for Tables {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Tables").finish_non_exhaustive()
+    }
+}
+
+impl Tables {
+    /// The number of bytes [`Tables::to_bytes`] produces.
+    ///
+    /// It is rounded up to a whole number of 32 bit words, because a NOR flash
+    /// writes words and would refuse a record that ends part way through one.
+    pub const SIZE: usize = PACKED.next_multiple_of(4);
+
+    const MAGIC: u32 = 0x5a54_424c;
+
+    /// Encodes the tables for storage.
+    ///
+    /// ```
+    /// # use zigbee::{Device, Event, Tables};
+    /// # fn persist(device: &mut Device, flash: &mut [u8; Tables::SIZE]) {
+    /// while let Some(event) = device.next_event() {
+    ///     if let Event::TablesChanged(saved) = event {
+    ///         *flash = saved.to_bytes();
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        self.0
+    }
+
+    /// Decodes tables produced by [`Tables::to_bytes`], rejecting anything that
+    /// is not a record this version wrote.
+    ///
+    /// Blank flash, an older layout and somebody else's data all read back as
+    /// `None`, which is the signal to start out belonging to nothing.
+    pub fn from_bytes(record: &[u8; Self::SIZE]) -> Option<Self> {
+        let magic = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
+        (magic == Self::MAGIC).then_some(Self(*record))
+    }
+
+    fn of(state: &zcl::State) -> Self {
+        let mut record = [0u8; Self::SIZE];
+        record[0..4].copy_from_slice(&Self::MAGIC.to_le_bytes());
+
+        for (slot, group) in record[4..].chunks_mut(2).zip(state.groups) {
+            slot.copy_from_slice(&group.to_le_bytes());
+        }
+
+        let occupied = SCENES_AT - 1;
+        for (index, scene) in state.scenes.iter().enumerate() {
+            let Some(scene) = scene else { continue };
+            record[occupied] |= 1 << index;
+            let at = SCENES_AT + index * SCENE_RECORD;
+            record[at..at + 2].copy_from_slice(&scene.group.to_le_bytes());
+            record[at + 2] = scene.id;
+            record[at + 3] = scene.on as u8;
+            record[at + 4] = scene.level;
+            record[at + 5] = scene.hue;
+            record[at + 6] = scene.saturation;
+            record[at + 7..at + 9].copy_from_slice(&scene.mireds.to_le_bytes());
+            record[at + 9] = scene.colour_mode;
+        }
+        Self(record)
+    }
+
+    fn apply(&self, state: &mut zcl::State) {
+        for (group, slot) in state.groups.iter_mut().zip(self.0[4..].chunks(2)) {
+            *group = u16::from_le_bytes([slot[0], slot[1]]);
+        }
+
+        let occupied = self.0[SCENES_AT - 1];
+        for (index, scene) in state.scenes.iter_mut().enumerate() {
+            if occupied & (1 << index) == 0 {
+                *scene = None;
+                continue;
+            }
+            let at = SCENES_AT + index * SCENE_RECORD;
+            *scene = Some(zcl::Scene {
+                group: u16::from_le_bytes([self.0[at], self.0[at + 1]]),
+                id: self.0[at + 2],
+                on: self.0[at + 3] != 0,
+                level: self.0[at + 4],
+                hue: self.0[at + 5],
+                saturation: self.0[at + 6],
+                mireds: u16::from_le_bytes([self.0[at + 7], self.0[at + 8]]),
+                colour_mode: self.0[at + 9],
+            });
+        }
+    }
+}
+
+const SCENE_RECORD: usize = 10;
+const SCENES_AT: usize = 4 + 2 * zcl::MAX_GROUPS + 1;
+const PACKED: usize = SCENES_AT + SCENE_RECORD * zcl::MAX_SCENES;
+
 /// How the light was last told to colour itself.
 ///
 /// The two are alternatives rather than layers: setting one replaces the other,
@@ -251,6 +355,9 @@ pub enum Event {
     LevelChanged(u8),
     /// The coordinator moved the colour, or switched which way it is stated.
     ColourChanged(Colour),
+    /// A group was joined or left, or a scene was written or forgotten. Worth
+    /// writing to storage, superseding any earlier tables.
+    TablesChanged(Tables),
 }
 
 enum Phase {
@@ -468,6 +575,14 @@ impl Device {
     /// The state of the On/Off application.
     pub const fn on_off(&self) -> bool {
         self.application.on
+    }
+
+    /// Puts back groups and scenes read from storage.
+    ///
+    /// Unlike [`Device::restore`] this is not part of joining a network, so it
+    /// can be called on a device built either way.
+    pub fn restore_tables(&mut self, tables: Tables) {
+        tables.apply(&mut self.application);
     }
 
     /// The colour the light was last told to be.
@@ -902,6 +1017,10 @@ impl Device {
             let colour = self.colour();
             self.emit(Event::ColourChanged(colour));
         }
+        if changed.tables {
+            let tables = Tables::of(&self.application);
+            self.emit(Event::TablesChanged(tables));
+        }
     }
 
     fn report_on_off(&mut self) {
@@ -1190,6 +1309,13 @@ impl Device {
     }
 
     fn on_application_data(&mut self, source: u16, broadcast: bool, request: &aps::Data, now: Instant) {
+        if let Some(group) = request.group {
+            if self.application.in_group(group) {
+                self.on_cluster_request(None, request, now);
+            }
+            return;
+        }
+
         if request.ack_request && !broadcast {
             self.acknowledge(source, request);
         }
@@ -1222,35 +1348,42 @@ impl Device {
                 );
             }
             aps::PROFILE_HOME_AUTOMATION if !broadcast => {
-                let mut reply = [0u8; 96];
-                let mut out = Writer::new(&mut reply);
-                let identity = zcl::Identity {
-                    manufacturer: self.config.manufacturer,
-                    model: self.config.model,
-                    software_build: self.config.software_build,
-                };
-                let outcome = zcl::handle(
-                    &mut out,
-                    request.cluster,
-                    request.payload,
-                    &mut self.application,
-                    &identity,
-                    now,
-                );
-                if let (true, Some(body)) = (outcome.has_reply, out.written()) {
-                    self.send_aps_data(
-                        source,
-                        request.src_endpoint,
-                        zdo::ENDPOINT,
-                        request.cluster,
-                        aps::PROFILE_HOME_AUTOMATION,
-                        body,
-                    );
-                }
-                self.publish_change(outcome.changed);
+                self.on_cluster_request(Some(source), request, now);
             }
             _ => {}
         }
+    }
+
+    /// Runs one cluster command. A group frame reaches every member at once, so
+    /// nobody answers it and `answer` is `None`.
+    fn on_cluster_request(&mut self, answer: Option<u16>, request: &aps::Data, now: Instant) {
+        let mut reply = [0u8; 96];
+        let mut out = Writer::new(&mut reply);
+        let identity = zcl::Identity {
+            manufacturer: self.config.manufacturer,
+            model: self.config.model,
+            software_build: self.config.software_build,
+        };
+        let outcome = zcl::handle(
+            &mut out,
+            request.cluster,
+            request.payload,
+            &mut self.application,
+            &identity,
+            now,
+        );
+
+        if let (Some(source), true, Some(body)) = (answer, outcome.has_reply, out.written()) {
+            self.send_aps_data(
+                source,
+                request.src_endpoint,
+                zdo::ENDPOINT,
+                request.cluster,
+                aps::PROFILE_HOME_AUTOMATION,
+                body,
+            );
+        }
+        self.publish_change(outcome.changed);
     }
 }
 

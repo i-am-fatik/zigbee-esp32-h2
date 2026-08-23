@@ -16,7 +16,8 @@ espflash flash --chip esp32h2 --port /dev/cu.usbmodem101 \
 
 The device scans channels 11 to 26, joins the first Zigbee PRO network that
 accepts it, and answers the coordinator as a colour light. Credentials go to
-flash, so a reboot or a firmware update rejoins without pairing again.
+flash, so a reboot or a firmware update rejoins without pairing again. Groups
+and scenes go to the next sector along, so they come back too.
 
 The BOOT button on GPIO9 toggles the light locally, debounced over 25 ms. The
 coordinator hears about it through the same attribute report it would get from
@@ -53,9 +54,10 @@ where the example is compiled and run as a doc test. A real one is
 | IEEE 802.15.4 MAC | frame control, addressing, beacons, association, data requests |
 | Security | AES-CCM\*, AES-MMO, HMAC, key-transport key derivation |
 | Network | headers, auxiliary security, frame counters, extended nonces |
-| Application support | data, command and ack frames, APS security, transport key |
+| Application support | data, command and ack frames, group addressing, APS security, transport key |
 | Device object | announce, descriptors, endpoints, address requests, bind |
 | Clusters | Basic, Identify, On/Off, Level Control, Colour Control, including attribute reporting |
+| Groups and scenes | group addressing on receive, four groups and eight scenes, kept in flash |
 
 ## What the LED says
 

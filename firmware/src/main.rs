@@ -77,6 +77,10 @@ fn main() -> ! {
         }
         None => Device::new(config),
     };
+    if let Some(tables) = store.load_tables() {
+        device.restore_tables(tables);
+        println!("store: groups and scenes came back from flash");
+    }
     println!("boot: zigbee end device, eui64 {:016x}", ieee);
 
     let mut led = AddressableLed::new(peripherals.RMT, peripherals.GPIO8);
@@ -138,6 +142,9 @@ fn main() -> ! {
                 Event::ColourChanged(colour) => println!("zcl: colour {:?}", colour),
                 Event::CredentialsChanged(credentials) => {
                     store.save(&credentials);
+                }
+                Event::TablesChanged(tables) => {
+                    store.save_tables(&tables);
                 }
                 _ => {}
             }

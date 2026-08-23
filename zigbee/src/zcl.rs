@@ -33,6 +33,37 @@ pub const LEVEL_MOVE_WITH_ON_OFF: u8 = 0x05;
 pub const LEVEL_STEP_WITH_ON_OFF: u8 = 0x06;
 pub const LEVEL_STOP_WITH_ON_OFF: u8 = 0x07;
 
+pub const GROUP_ADD: u8 = 0x00;
+pub const GROUP_VIEW: u8 = 0x01;
+pub const GROUP_GET_MEMBERSHIP: u8 = 0x02;
+pub const GROUP_REMOVE: u8 = 0x03;
+pub const GROUP_REMOVE_ALL: u8 = 0x04;
+pub const GROUP_ADD_IF_IDENTIFYING: u8 = 0x05;
+
+pub const SCENE_ADD: u8 = 0x00;
+pub const SCENE_VIEW: u8 = 0x01;
+pub const SCENE_REMOVE: u8 = 0x02;
+pub const SCENE_REMOVE_ALL: u8 = 0x03;
+pub const SCENE_STORE: u8 = 0x04;
+pub const SCENE_RECALL: u8 = 0x05;
+pub const SCENE_GET_MEMBERSHIP: u8 = 0x06;
+
+pub const ATTR_NAME_SUPPORT: u16 = 0x0000;
+pub const ATTR_SCENE_COUNT: u16 = 0x0000;
+pub const ATTR_CURRENT_SCENE: u16 = 0x0001;
+pub const ATTR_CURRENT_GROUP: u16 = 0x0002;
+pub const ATTR_SCENE_VALID: u16 = 0x0003;
+pub const ATTR_SCENE_NAME_SUPPORT: u16 = 0x0004;
+
+/// How many groups and scenes a device with no allocator can hold. Both tables
+/// live in memory, so a restart starts them empty.
+pub const MAX_GROUPS: usize = 4;
+pub const MAX_SCENES: usize = 8;
+
+/// Group zero addresses nobody, which makes it the empty slot in the table and
+/// the way a scene says it belongs to no group at all.
+const NO_GROUP: u16 = 0x0000;
+
 pub const COLOUR_MOVE_TO_HUE: u8 = 0x00;
 pub const COLOUR_STEP_HUE: u8 = 0x02;
 pub const COLOUR_MOVE_TO_SATURATION: u8 = 0x03;
@@ -89,12 +120,16 @@ const TYPE_BOOL: u8 = 0x10;
 const TYPE_UINT8: u8 = 0x20;
 const TYPE_UINT16: u8 = 0x21;
 const TYPE_ENUM8: u8 = 0x30;
+const TYPE_BITMAP8: u8 = 0x18;
 const TYPE_BITMAP16: u8 = 0x19;
 const TYPE_STRING: u8 = 0x42;
 
 const STATUS_SUCCESS: u8 = 0x00;
 const STATUS_UNSUPPORTED_ATTRIBUTE: u8 = 0x86;
 const STATUS_INVALID_FIELD: u8 = 0x85;
+const STATUS_INSUFFICIENT_SPACE: u8 = 0x89;
+const STATUS_DUPLICATE_EXISTS: u8 = 0x8a;
+const STATUS_NOT_FOUND: u8 = 0x8b;
 const STATUS_UNSUP_CLUSTER_COMMAND: u8 = 0x81;
 
 const DIRECTION_REPORT: u8 = 0x00;
@@ -188,6 +223,22 @@ fn write_attribute(
         (super::zdo::CLUSTER_IDENTIFY, ATTR_IDENTIFY_TIME) => {
             out.u8(TYPE_UINT16).u16(state.identify_remaining(now));
         }
+        (super::zdo::CLUSTER_GROUPS, ATTR_NAME_SUPPORT)
+        | (super::zdo::CLUSTER_SCENES, ATTR_SCENE_NAME_SUPPORT) => {
+            out.u8(TYPE_BITMAP8).u8(0x00);
+        }
+        (super::zdo::CLUSTER_SCENES, ATTR_SCENE_COUNT) => {
+            out.u8(TYPE_UINT8).u8(state.scene_count());
+        }
+        (super::zdo::CLUSTER_SCENES, ATTR_CURRENT_SCENE) => {
+            out.u8(TYPE_UINT8).u8(state.current_scene);
+        }
+        (super::zdo::CLUSTER_SCENES, ATTR_CURRENT_GROUP) => {
+            out.u8(TYPE_UINT16).u16(state.current_group);
+        }
+        (super::zdo::CLUSTER_SCENES, ATTR_SCENE_VALID) => {
+            out.u8(TYPE_BOOL).u8(state.scene_valid as u8);
+        }
         (super::zdo::CLUSTER_ON_OFF, ATTR_ON_OFF) => {
             out.u8(TYPE_BOOL).u8(state.on as u8);
         }
@@ -269,6 +320,7 @@ pub struct Changed {
     pub on_off: bool,
     pub level: bool,
     pub colour: bool,
+    pub tables: bool,
 }
 
 impl Changed {
@@ -276,6 +328,12 @@ impl Changed {
         on_off: false,
         level: false,
         colour: false,
+        tables: false,
+    };
+
+    pub const TABLES: Self = Self {
+        tables: true,
+        ..Self::NONE
     };
 }
 
@@ -290,6 +348,19 @@ struct Ramp {
     from: u8,
 }
 
+/// One remembered light setting, recalled by its group and scene together.
+#[derive(Clone, Copy)]
+pub struct Scene {
+    pub group: u16,
+    pub id: u8,
+    pub on: bool,
+    pub level: u8,
+    pub hue: u8,
+    pub saturation: u8,
+    pub mireds: u16,
+    pub colour_mode: u8,
+}
+
 pub struct State {
     pub on: bool,
     pub level: u8,
@@ -300,6 +371,11 @@ pub struct State {
     pub identify_until: Option<Instant>,
     pub on_off_report: Reportable,
     pub level_report: Reportable,
+    pub groups: [u16; MAX_GROUPS],
+    pub scenes: [Option<Scene>; MAX_SCENES],
+    pub current_group: u16,
+    pub current_scene: u8,
+    pub scene_valid: bool,
     ramp: Option<Ramp>,
 }
 
@@ -315,6 +391,11 @@ impl Default for State {
             identify_until: None,
             on_off_report: Reportable::default(),
             level_report: Reportable::default(),
+            groups: [NO_GROUP; MAX_GROUPS],
+            scenes: [None; MAX_SCENES],
+            current_group: NO_GROUP,
+            current_scene: 0,
+            scene_valid: false,
             ramp: None,
         }
     }
@@ -350,6 +431,9 @@ impl State {
             let on = level > 0;
             changed.on_off = self.on != on;
             self.on = on;
+        }
+        if changed.level || changed.on_off {
+            self.scene_valid = false;
         }
         changed
     }
@@ -396,6 +480,9 @@ impl State {
         self.hue = hue;
         self.saturation = saturation;
         self.colour_mode = COLOUR_MODE_HUE_SATURATION;
+        if changed.colour {
+            self.scene_valid = false;
+        }
         changed
     }
 
@@ -407,6 +494,9 @@ impl State {
         };
         self.mireds = mireds;
         self.colour_mode = COLOUR_MODE_TEMPERATURE;
+        if changed.colour {
+            self.scene_valid = false;
+        }
         changed
     }
 
@@ -428,6 +518,147 @@ impl State {
             self.saturation.saturating_sub(size)
         };
         self.set_hue_and_saturation(self.hue, moved)
+    }
+
+    pub fn in_group(&self, group: u16) -> bool {
+        group != NO_GROUP && self.groups.contains(&group)
+    }
+
+    fn join_group(&mut self, group: u16) -> u8 {
+        if group == NO_GROUP {
+            return STATUS_INVALID_FIELD;
+        }
+        if self.in_group(group) {
+            return STATUS_DUPLICATE_EXISTS;
+        }
+        match self.groups.iter_mut().find(|slot| **slot == NO_GROUP) {
+            Some(slot) => {
+                *slot = group;
+                STATUS_SUCCESS
+            }
+            None => STATUS_INSUFFICIENT_SPACE,
+        }
+    }
+
+    fn leave_group(&mut self, group: u16) -> u8 {
+        match self.groups.iter_mut().find(|slot| **slot == group) {
+            Some(slot) if group != NO_GROUP => {
+                *slot = NO_GROUP;
+                self.forget_scenes_of(group);
+                STATUS_SUCCESS
+            }
+            _ => STATUS_NOT_FOUND,
+        }
+    }
+
+    fn leave_every_group(&mut self) {
+        for group in self.groups {
+            self.forget_scenes_of(group);
+        }
+        self.groups = [NO_GROUP; MAX_GROUPS];
+    }
+
+    /// A scene belongs to a group, so losing the group loses the scene with it.
+    fn forget_scenes_of(&mut self, group: u16) {
+        for slot in self.scenes.iter_mut() {
+            if slot.is_some_and(|scene| scene.group == group) {
+                *slot = None;
+            }
+        }
+    }
+
+    fn group_capacity(&self) -> u8 {
+        self.groups.iter().filter(|slot| **slot == NO_GROUP).count() as u8
+    }
+
+    fn scene_capacity(&self) -> u8 {
+        self.scenes.iter().filter(|slot| slot.is_none()).count() as u8
+    }
+
+    fn scene_count(&self) -> u8 {
+        (MAX_SCENES as u8) - self.scene_capacity()
+    }
+
+    fn find_scene(&self, group: u16, id: u8) -> Option<usize> {
+        self.scenes
+            .iter()
+            .position(|slot| slot.is_some_and(|scene| scene.group == group && scene.id == id))
+    }
+
+    /// A scene may sit in a group only if the device is in that group, and the
+    /// groupless scene zero is always allowed.
+    fn may_hold_scenes_for(&self, group: u16) -> bool {
+        group == NO_GROUP || self.in_group(group)
+    }
+
+    fn put_scene(&mut self, scene: Scene) -> u8 {
+        if !self.may_hold_scenes_for(scene.group) {
+            return STATUS_INVALID_FIELD;
+        }
+        if let Some(index) = self.find_scene(scene.group, scene.id) {
+            self.scenes[index] = Some(scene);
+            return STATUS_SUCCESS;
+        }
+        match self.scenes.iter_mut().find(|slot| slot.is_none()) {
+            Some(slot) => {
+                *slot = Some(scene);
+                STATUS_SUCCESS
+            }
+            None => STATUS_INSUFFICIENT_SPACE,
+        }
+    }
+
+    fn store_scene(&mut self, group: u16, id: u8) -> u8 {
+        self.put_scene(Scene {
+            group,
+            id,
+            on: self.on,
+            level: self.level,
+            hue: self.hue,
+            saturation: self.saturation,
+            mireds: self.mireds,
+            colour_mode: self.colour_mode,
+        })
+    }
+
+    fn remove_scene(&mut self, group: u16, id: u8) -> u8 {
+        match self.find_scene(group, id) {
+            Some(index) => {
+                self.scenes[index] = None;
+                STATUS_SUCCESS
+            }
+            None => STATUS_NOT_FOUND,
+        }
+    }
+
+    fn remove_scenes_of(&mut self, group: u16) -> u8 {
+        if !self.may_hold_scenes_for(group) {
+            return STATUS_INVALID_FIELD;
+        }
+        self.forget_scenes_of(group);
+        STATUS_SUCCESS
+    }
+
+    fn recall_scene(&mut self, group: u16, id: u8) -> Option<Changed> {
+        let index = self.find_scene(group, id)?;
+        let scene = self.scenes[index]?;
+
+        let mut changed = self.settle(scene.level, false);
+        if self.on != scene.on {
+            changed.on_off = true;
+            self.on = scene.on;
+        }
+        let colour = if scene.colour_mode == COLOUR_MODE_TEMPERATURE {
+            self.set_mireds(scene.mireds)
+        } else {
+            self.set_hue_and_saturation(scene.hue, scene.saturation)
+        };
+        changed.colour = colour.colour;
+
+        self.current_group = scene.group;
+        self.current_scene = scene.id;
+        self.scene_valid = true;
+        Some(changed)
     }
 
     /// Carries a move under way forward to where it should be by now, and ends
@@ -617,6 +848,268 @@ fn write_attributes(
     }
 }
 
+/// The values a scene remembers, written the way the specification lays them
+/// out per cluster.
+fn read_extension_fields(payload: &[u8], scene: &mut Scene) {
+    let mut r = Reader::new(payload);
+    while let (Some(cluster), Some(len)) = (r.u16(), r.u8()) {
+        let Some(fields) = r.take(len as usize) else {
+            return;
+        };
+        let mut f = Reader::new(fields);
+        match cluster {
+            super::zdo::CLUSTER_ON_OFF => {
+                if let Some(on) = f.u8() {
+                    scene.on = on != 0;
+                }
+            }
+            super::zdo::CLUSTER_LEVEL_CONTROL => {
+                if let Some(level) = f.u8() {
+                    scene.level = level.min(MAX_LEVEL);
+                }
+            }
+            super::zdo::CLUSTER_COLOUR_CONTROL => read_colour_fields(&mut f, scene),
+            _ => {}
+        }
+    }
+}
+
+/// The colour field set opens with the XY space this device does not serve, so
+/// the hue and the saturation are taken from further in, and a temperature that
+/// is not zero is what says the scene wanted a white rather than a colour.
+fn read_colour_fields(f: &mut Reader, scene: &mut Scene) {
+    if f.skip(4).is_none() {
+        return;
+    }
+    let (Some(enhanced_hue), Some(saturation)) = (f.u16(), f.u8()) else {
+        return;
+    };
+    scene.hue = (enhanced_hue >> 8) as u8;
+    scene.saturation = saturation.min(MAX_SATURATION);
+    scene.colour_mode = COLOUR_MODE_HUE_SATURATION;
+
+    if f.skip(4).is_none() {
+        return;
+    }
+    if let Some(mireds) = f.u16().filter(|mireds| *mireds != 0) {
+        scene.mireds = mireds.clamp(COOLEST_MIREDS, WARMEST_MIREDS);
+        scene.colour_mode = COLOUR_MODE_TEMPERATURE;
+    }
+}
+
+fn write_extension_fields(out: &mut Writer, scene: &Scene) {
+    out.u16(super::zdo::CLUSTER_ON_OFF).u8(1).u8(scene.on as u8);
+    out.u16(super::zdo::CLUSTER_LEVEL_CONTROL)
+        .u8(1)
+        .u8(scene.level);
+    out.u16(super::zdo::CLUSTER_COLOUR_CONTROL).u8(13);
+    out.u16(0).u16(0);
+    out.u16((scene.hue as u16) << 8).u8(scene.saturation);
+    out.u8(0).u8(0).u16(0);
+    out.u16(match scene.colour_mode {
+        COLOUR_MODE_TEMPERATURE => scene.mireds,
+        _ => 0,
+    });
+}
+
+/// Answers a Groups command. `None` means a reply specific to the command was
+/// written, `Some` carries the status a default response should report.
+fn handle_group_command(
+    out: &mut Writer,
+    request: &Incoming,
+    state: &mut State,
+    now: Instant,
+) -> (Option<u8>, Changed) {
+    let mut r = Reader::new(request.payload);
+    let group = r.u16();
+
+    match (request.command, group) {
+        (GROUP_ADD, Some(group)) => {
+            let status = state.join_group(group);
+            header(out, true, request.seq, GROUP_ADD);
+            out.u8(status).u16(group);
+            (None, Changed::TABLES)
+        }
+        (GROUP_ADD_IF_IDENTIFYING, Some(group)) => {
+            if state.identify_remaining(now) > 0 {
+                state.join_group(group);
+            }
+            (Some(STATUS_SUCCESS), Changed::TABLES)
+        }
+        (GROUP_VIEW, Some(group)) => {
+            let status = if state.in_group(group) {
+                STATUS_SUCCESS
+            } else {
+                STATUS_NOT_FOUND
+            };
+            header(out, true, request.seq, GROUP_VIEW);
+            out.u8(status).u16(group).u8(0);
+            (None, Changed::NONE)
+        }
+        (GROUP_REMOVE, Some(group)) => {
+            let status = state.leave_group(group);
+            header(out, true, request.seq, GROUP_REMOVE);
+            out.u8(status).u16(group);
+            (None, Changed::TABLES)
+        }
+        (GROUP_GET_MEMBERSHIP, _) => {
+            let mut r = Reader::new(request.payload);
+            let wanted = r.u8().unwrap_or(0);
+            header(out, true, request.seq, GROUP_GET_MEMBERSHIP);
+            out.u8(state.group_capacity());
+            let count_at = out.len();
+            out.u8(0);
+
+            let mut count = 0;
+            if wanted == 0 {
+                for group in state.groups.iter().filter(|slot| **slot != NO_GROUP) {
+                    out.u16(*group);
+                    count += 1;
+                }
+            } else {
+                for _ in 0..wanted {
+                    let Some(group) = r.u16() else { break };
+                    if state.in_group(group) {
+                        out.u16(group);
+                        count += 1;
+                    }
+                }
+            }
+            out.set(count_at, count);
+            (None, Changed::NONE)
+        }
+        (GROUP_REMOVE_ALL, _) => {
+            state.leave_every_group();
+            (Some(STATUS_SUCCESS), Changed::TABLES)
+        }
+        (_, None) => (Some(STATUS_INVALID_FIELD), Changed::NONE),
+        _ => (Some(STATUS_UNSUP_CLUSTER_COMMAND), Changed::NONE),
+    }
+}
+
+/// Answers a Scenes command, with the same `None` means "already replied".
+fn handle_scene_command(
+    out: &mut Writer,
+    request: &Incoming,
+    state: &mut State,
+) -> (Option<u8>, Changed) {
+    let mut r = Reader::new(request.payload);
+    let Some(group) = r.u16() else {
+        return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+    };
+
+    match request.command {
+        SCENE_ADD => {
+            let (Some(id), Some(_transition), Some(name_len)) = (r.u8(), r.u16(), r.u8()) else {
+                return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+            };
+            if r.skip(name_len as usize).is_none() {
+                return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+            }
+            let mut scene = Scene {
+                group,
+                id,
+                on: state.on,
+                level: state.level,
+                hue: state.hue,
+                saturation: state.saturation,
+                mireds: state.mireds,
+                colour_mode: state.colour_mode,
+            };
+            read_extension_fields(r.rest(), &mut scene);
+            let status = state.put_scene(scene);
+            header(out, true, request.seq, SCENE_ADD);
+            out.u8(status).u16(group).u8(id);
+            (None, Changed::TABLES)
+        }
+        SCENE_VIEW => {
+            let Some(id) = r.u8() else {
+                return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+            };
+            header(out, true, request.seq, SCENE_VIEW);
+            match state.find_scene(group, id).and_then(|at| state.scenes[at]) {
+                Some(scene) => {
+                    out.u8(STATUS_SUCCESS).u16(group).u8(id).u16(0).u8(0);
+                    write_extension_fields(out, &scene);
+                }
+                None => {
+                    out.u8(STATUS_NOT_FOUND).u16(group).u8(id);
+                }
+            }
+            (None, Changed::NONE)
+        }
+        SCENE_REMOVE => {
+            let Some(id) = r.u8() else {
+                return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+            };
+            let status = state.remove_scene(group, id);
+            header(out, true, request.seq, SCENE_REMOVE);
+            out.u8(status).u16(group).u8(id);
+            (None, Changed::TABLES)
+        }
+        SCENE_REMOVE_ALL => {
+            let status = state.remove_scenes_of(group);
+            header(out, true, request.seq, SCENE_REMOVE_ALL);
+            out.u8(status).u16(group);
+            (None, Changed::TABLES)
+        }
+        SCENE_STORE => {
+            let Some(id) = r.u8() else {
+                return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+            };
+            let status = state.store_scene(group, id);
+            header(out, true, request.seq, SCENE_STORE);
+            out.u8(status).u16(group).u8(id);
+            (None, Changed::TABLES)
+        }
+        SCENE_RECALL => {
+            let Some(id) = r.u8() else {
+                return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+            };
+            match state.recall_scene(group, id) {
+                Some(changed) => (Some(STATUS_SUCCESS), changed),
+                None => (Some(STATUS_NOT_FOUND), Changed::NONE),
+            }
+        }
+        SCENE_GET_MEMBERSHIP => {
+            header(out, true, request.seq, SCENE_GET_MEMBERSHIP);
+            if state.may_hold_scenes_for(group) {
+                out.u8(STATUS_SUCCESS).u8(state.scene_capacity()).u16(group);
+                let count_at = out.len();
+                out.u8(0);
+                let mut count = 0;
+                for scene in state.scenes.iter().flatten().filter(|s| s.group == group) {
+                    out.u8(scene.id);
+                    count += 1;
+                }
+                out.set(count_at, count);
+            } else {
+                out.u8(STATUS_INVALID_FIELD)
+                    .u8(state.scene_capacity())
+                    .u16(group);
+            }
+            (None, Changed::NONE)
+        }
+        _ => (Some(STATUS_UNSUP_CLUSTER_COMMAND), Changed::NONE),
+    }
+}
+
+/// Either the default response the specification asks for, or nothing when the
+/// requester said it did not want one and there was nothing to report.
+fn finish(out: &mut Writer, request: &Incoming, status: u8, changed: Changed) -> Outcome {
+    if request.disable_default_response && status == STATUS_SUCCESS {
+        return Outcome {
+            has_reply: false,
+            changed,
+        };
+    }
+    default_response(out, request.seq, request.command, status);
+    Outcome {
+        has_reply: true,
+        changed,
+    }
+}
+
 fn handle_cluster_command(
     out: &mut Writer,
     cluster: u16,
@@ -624,6 +1117,27 @@ fn handle_cluster_command(
     state: &mut State,
     now: Instant,
 ) -> Outcome {
+    if cluster == super::zdo::CLUSTER_GROUPS {
+        let (status, changed) = handle_group_command(out, request, state, now);
+        return match status {
+            Some(status) => finish(out, request, status, changed),
+            None => Outcome {
+                has_reply: true,
+                changed,
+            },
+        };
+    }
+    if cluster == super::zdo::CLUSTER_SCENES {
+        let (status, changed) = handle_scene_command(out, request, state);
+        return match status {
+            Some(status) => finish(out, request, status, changed),
+            None => Outcome {
+                has_reply: true,
+                changed,
+            },
+        };
+    }
+
     if cluster == super::zdo::CLUSTER_IDENTIFY && request.command == IDENTIFY_QUERY {
         let remaining = state.identify_remaining(now);
         if remaining == 0 {
@@ -753,18 +1267,7 @@ fn handle_cluster_command(
         _ => STATUS_UNSUP_CLUSTER_COMMAND,
     };
 
-    if request.disable_default_response && status == STATUS_SUCCESS {
-        return Outcome {
-            has_reply: false,
-            changed,
-        };
-    }
-
-    default_response(out, request.seq, request.command, status);
-    Outcome {
-        has_reply: true,
-        changed,
-    }
+    finish(out, request, status, changed)
 }
 
 fn default_response(out: &mut Writer, seq: u8, command: u8, status: u8) {
@@ -995,6 +1498,80 @@ mod tests {
         let (_, reply) = run(COLOUR_CLUSTER, &configure, &mut state, 0);
 
         assert_eq!(reply[3], STATUS_UNSUPPORTED_ATTRIBUTE);
+    }
+
+    const GROUPS_CLUSTER: u16 = super::super::zdo::CLUSTER_GROUPS;
+    const SCENES_CLUSTER: u16 = super::super::zdo::CLUSTER_SCENES;
+
+    #[test]
+    fn the_membership_response_lists_every_group_and_the_room_left() {
+        let mut state = State::default();
+        run(GROUPS_CLUSTER, &[0x01, 0x80, GROUP_ADD, 0x07, 0x00, 0x00], &mut state, 0);
+        run(GROUPS_CLUSTER, &[0x01, 0x81, GROUP_ADD, 0x09, 0x00, 0x00], &mut state, 0);
+
+        let (_, reply) = run(GROUPS_CLUSTER, &[0x01, 0x82, GROUP_GET_MEMBERSHIP, 0], &mut state, 0);
+
+        assert_eq!(reply[2], GROUP_GET_MEMBERSHIP);
+        assert_eq!(reply[3], (MAX_GROUPS - 2) as u8, "two of four slots taken");
+        assert_eq!(reply[4], 2);
+        assert_eq!(u16::from_le_bytes([reply[5], reply[6]]), 7);
+        assert_eq!(u16::from_le_bytes([reply[7], reply[8]]), 9);
+    }
+
+    #[test]
+    fn a_second_add_of_the_same_group_says_it_is_already_there() {
+        let mut state = State::default();
+        run(GROUPS_CLUSTER, &[0x01, 0x83, GROUP_ADD, 0x07, 0x00, 0x00], &mut state, 0);
+
+        let (_, reply) = run(
+            GROUPS_CLUSTER,
+            &[0x01, 0x84, GROUP_ADD, 0x07, 0x00, 0x00],
+            &mut state,
+            0,
+        );
+
+        assert_eq!(reply[3], STATUS_DUPLICATE_EXISTS);
+    }
+
+    #[test]
+    fn viewing_a_scene_gives_back_the_setting_it_holds() {
+        let mut state = State::default();
+        state.settle(200, true);
+        state.set_hue_and_saturation(60, 180);
+        run(SCENES_CLUSTER, &[0x01, 0x85, SCENE_STORE, 0x00, 0x00, 0x01], &mut state, 0);
+
+        let (_, reply) = run(SCENES_CLUSTER, &[0x01, 0x86, SCENE_VIEW, 0x00, 0x00, 0x01], &mut state, 0);
+
+        assert_eq!(reply[3], STATUS_SUCCESS);
+        assert_eq!(reply[6], 0x01, "the scene it was asked about");
+        assert_eq!(reply[9], 0, "no name, because names are not supported");
+
+        let fields = &reply[10..];
+        assert_eq!(&fields[..4], &[0x06, 0x00, 0x01, 0x01], "on");
+        assert_eq!(&fields[4..8], &[0x08, 0x00, 0x01, 200], "the brightness");
+        assert_eq!(&fields[8..11], &[0x00, 0x03, 0x0d], "thirteen octets of colour");
+        assert_eq!(u16::from_le_bytes([fields[15], fields[16]]) >> 8, 60, "the hue");
+        assert_eq!(fields[17], 180, "the saturation");
+    }
+
+    #[test]
+    fn the_attributes_say_which_scene_is_live_and_whether_it_still_is() {
+        let mut state = State::default();
+        run(SCENES_CLUSTER, &[0x01, 0x87, SCENE_STORE, 0x00, 0x00, 0x04], &mut state, 0);
+
+        let count = read(SCENES_CLUSTER, ATTR_SCENE_COUNT, &mut state);
+        assert_eq!(count[7], 1);
+
+        run(SCENES_CLUSTER, &[0x01, 0x88, SCENE_RECALL, 0x00, 0x00, 0x04], &mut state, 0);
+        assert_eq!(read(SCENES_CLUSTER, ATTR_CURRENT_SCENE, &mut state)[7], 4);
+        assert_eq!(read(SCENES_CLUSTER, ATTR_SCENE_VALID, &mut state)[7], 1);
+
+        state.settle(3, false);
+        assert_eq!(
+            read(SCENES_CLUSTER, ATTR_SCENE_VALID, &mut state)[7],
+            0,
+            "moving the light by hand leaves the scene behind"
+        );
     }
 
     #[test]

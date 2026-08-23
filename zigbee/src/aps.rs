@@ -7,6 +7,7 @@ pub const FRAME_TYPE_ACK: u8 = 2;
 
 pub const DELIVERY_UNICAST: u8 = 0;
 pub const DELIVERY_BROADCAST: u8 = 2;
+pub const DELIVERY_GROUP: u8 = 3;
 
 pub const CMD_TRANSPORT_KEY: u8 = 0x05;
 
@@ -61,6 +62,10 @@ pub fn build_ack(out: &mut Writer, to: &Data) {
 }
 
 pub struct Data<'a> {
+    /// The group the frame was sent to, when it was sent to one rather than to
+    /// an endpoint. A group frame carries a group address where a unicast
+    /// carries a destination endpoint, so the two are never both present.
+    pub group: Option<u16>,
     pub dst_endpoint: u8,
     pub src_endpoint: u8,
     pub cluster: u16,
@@ -87,7 +92,11 @@ pub fn parse(input: &[u8]) -> Option<Frame<'_>> {
 
     match fc & 0b11 {
         FRAME_TYPE_DATA => {
-            let dst_endpoint = r.u8()?;
+            let (group, dst_endpoint) = if (fc >> 2) & 0b11 == DELIVERY_GROUP {
+                (Some(r.u16()?), 0)
+            } else {
+                (None, r.u8()?)
+            };
             let cluster = r.u16()?;
             let profile = r.u16()?;
             let src_endpoint = r.u8()?;
@@ -96,6 +105,7 @@ pub fn parse(input: &[u8]) -> Option<Frame<'_>> {
                 r.skip(2)?;
             }
             Some(Frame::Data(Data {
+                group,
                 dst_endpoint,
                 src_endpoint,
                 cluster,

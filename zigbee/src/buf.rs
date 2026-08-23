@@ -96,6 +96,14 @@ impl<'a> Reader<'a> {
         Some(out)
     }
 
+    /// The next `n` bytes as their own slice, so a length-prefixed field can be
+    /// parsed without the parser being able to read past it.
+    pub fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let slice = self.buf.get(self.pos..self.pos + n)?;
+        self.pos += n;
+        Some(slice)
+    }
+
     pub fn skip(&mut self, n: usize) -> Option<()> {
         if self.pos + n > self.buf.len() {
             return None;
