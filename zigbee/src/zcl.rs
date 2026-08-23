@@ -24,6 +24,28 @@ pub const ON_OFF_TOGGLE: u8 = 0x02;
 
 pub const ATTR_ON_OFF: u16 = 0x0000;
 
+pub const LEVEL_MOVE_TO_LEVEL: u8 = 0x00;
+pub const LEVEL_MOVE: u8 = 0x01;
+pub const LEVEL_STEP: u8 = 0x02;
+pub const LEVEL_STOP: u8 = 0x03;
+pub const LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF: u8 = 0x04;
+pub const LEVEL_MOVE_WITH_ON_OFF: u8 = 0x05;
+pub const LEVEL_STEP_WITH_ON_OFF: u8 = 0x06;
+pub const LEVEL_STOP_WITH_ON_OFF: u8 = 0x07;
+
+const DIRECTION_UP: u8 = 0x00;
+const DIRECTION_DOWN: u8 = 0x01;
+
+/// The rate a coordinator sends when it wants the light to move as fast as it
+/// can rather than at a stated number of units per second.
+const RATE_UNSTATED: u8 = 0xff;
+
+pub const ATTR_CURRENT_LEVEL: u16 = 0x0000;
+
+/// The brightest a Level Control light goes. 0xff is reserved for "undefined",
+/// so the usable range stops one short of it.
+pub const MAX_LEVEL: u8 = 0xfe;
+
 const TYPE_BOOL: u8 = 0x10;
 const TYPE_UINT8: u8 = 0x20;
 const TYPE_UINT16: u8 = 0x21;
@@ -32,6 +54,7 @@ const TYPE_STRING: u8 = 0x42;
 
 const STATUS_SUCCESS: u8 = 0x00;
 const STATUS_UNSUPPORTED_ATTRIBUTE: u8 = 0x86;
+const STATUS_INVALID_FIELD: u8 = 0x85;
 const STATUS_UNSUP_CLUSTER_COMMAND: u8 = 0x81;
 
 const DIRECTION_REPORT: u8 = 0x00;
@@ -128,6 +151,9 @@ fn write_attribute(
         (super::zdo::CLUSTER_ON_OFF, ATTR_ON_OFF) => {
             out.u8(TYPE_BOOL).u8(state.on as u8);
         }
+        (super::zdo::CLUSTER_LEVEL_CONTROL, ATTR_CURRENT_LEVEL) => {
+            out.u8(TYPE_UINT8).u8(state.level);
+        }
         _ => return false,
     }
     true
@@ -141,11 +167,85 @@ pub struct Reporting {
     pub max_interval: u16,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy)]
+pub struct Reportable {
+    pub reporting: Option<Reporting>,
+    pub pending: bool,
+    pub last_at: Instant,
+}
+
+impl Default for Reportable {
+    fn default() -> Self {
+        Self {
+            reporting: None,
+            pending: false,
+            last_at: Instant::from_millis(0),
+        }
+    }
+}
+
+impl Reportable {
+    pub fn due(&self, now: Instant) -> bool {
+        let Some(reporting) = self.reporting else {
+            return false;
+        };
+        let quiet_for = now.millis_since(self.last_at);
+        let may = quiet_for >= reporting.min_interval as u32 * 1000;
+        let periodic = reporting.max_interval != 0 && reporting.max_interval != INTERVAL_NEVER;
+        let must = periodic && quiet_for >= reporting.max_interval as u32 * 1000;
+        must || (self.pending && may)
+    }
+
+    pub fn sent(&mut self, now: Instant) {
+        self.pending = false;
+        self.last_at = now;
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Changed {
+    pub on_off: bool,
+    pub level: bool,
+}
+
+impl Changed {
+    pub const NONE: Self = Self {
+        on_off: false,
+        level: false,
+    };
+}
+
+/// A brightness move already under way, held as its starting point rather than
+/// its current one so repeated ticks cannot accumulate rounding error.
+#[derive(Clone, Copy)]
+struct Ramp {
+    up: bool,
+    rate: u8,
+    with_on_off: bool,
+    started_at: Instant,
+    from: u8,
+}
+
 pub struct State {
     pub on: bool,
+    pub level: u8,
     pub identify_until: Option<Instant>,
-    pub on_off_reporting: Option<Reporting>,
+    pub on_off_report: Reportable,
+    pub level_report: Reportable,
+    ramp: Option<Ramp>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            on: false,
+            level: MAX_LEVEL,
+            identify_until: None,
+            on_off_report: Reportable::default(),
+            level_report: Reportable::default(),
+            ramp: None,
+        }
+    }
 }
 
 impl State {
@@ -163,16 +263,85 @@ impl State {
     fn identify_for(&mut self, seconds: u16, now: Instant) {
         self.identify_until = (seconds > 0).then(|| now.plus_millis(seconds as u32 * 1000));
     }
+
+    /// Lands on a brightness, and with the on-off variant lets a level of zero
+    /// switch the light off and any other level switch it on.
+    fn settle(&mut self, level: u8, with_on_off: bool) -> Changed {
+        let level = level.min(MAX_LEVEL);
+        let mut changed = Changed {
+            on_off: false,
+            level: self.level != level,
+        };
+        self.level = level;
+
+        if with_on_off {
+            let on = level > 0;
+            changed.on_off = self.on != on;
+            self.on = on;
+        }
+        changed
+    }
+
+    fn move_to_level(&mut self, level: u8, with_on_off: bool) -> Changed {
+        self.stop();
+        self.settle(level, with_on_off)
+    }
+
+    fn step(&mut self, up: bool, size: u8, with_on_off: bool) -> Changed {
+        self.stop();
+        let level = if up {
+            self.level.saturating_add(size)
+        } else {
+            self.level.saturating_sub(size)
+        };
+        self.settle(level, with_on_off)
+    }
+
+    fn start_ramp(&mut self, up: bool, rate: u8, with_on_off: bool, now: Instant) {
+        self.ramp = Some(Ramp {
+            up,
+            rate: if rate == RATE_UNSTATED { MAX_LEVEL } else { rate },
+            with_on_off,
+            started_at: now,
+            from: self.level,
+        });
+    }
+
+    /// Abandons any move under way, leaving the brightness where it reached.
+    pub fn stop(&mut self) {
+        self.ramp = None;
+    }
+
+    /// Carries a move under way forward to where it should be by now, and ends
+    /// it once the brightness runs into either end of the range.
+    pub fn advance(&mut self, now: Instant) -> Changed {
+        let Some(ramp) = self.ramp else {
+            return Changed::NONE;
+        };
+
+        let elapsed = now.millis_since(ramp.started_at) as u64;
+        let travelled = (ramp.rate as u64 * elapsed / 1000).min(u8::MAX as u64) as u8;
+        let level = if ramp.up {
+            ramp.from.saturating_add(travelled).min(MAX_LEVEL)
+        } else {
+            ramp.from.saturating_sub(travelled)
+        };
+
+        if level == 0 || level == MAX_LEVEL {
+            self.stop();
+        }
+        self.settle(level, ramp.with_on_off)
+    }
 }
 
 pub struct Outcome {
     pub has_reply: bool,
-    pub state_changed: bool,
+    pub changed: Changed,
 }
 
 const NOTHING: Outcome = Outcome {
     has_reply: false,
-    state_changed: false,
+    changed: Changed::NONE,
 };
 
 pub fn handle(
@@ -208,7 +377,7 @@ pub fn handle(
             }
             Outcome {
                 has_reply: true,
-                state_changed: false,
+                changed: Changed::NONE,
             }
         }
         CMD_CONFIGURE_REPORTING => {
@@ -216,7 +385,7 @@ pub fn handle(
             configure_reporting(out, cluster, request.payload, state);
             Outcome {
                 has_reply: true,
-                state_changed: false,
+                changed: Changed::NONE,
             }
         }
         CMD_WRITE_ATTRIBUTES => {
@@ -224,7 +393,7 @@ pub fn handle(
             write_attributes(out, cluster, request.payload, state, now);
             Outcome {
                 has_reply: true,
-                state_changed: false,
+                changed: Changed::NONE,
             }
         }
         CMD_DISCOVER_ATTRIBUTES => {
@@ -232,7 +401,7 @@ pub fn handle(
             out.u8(0x01);
             Outcome {
                 has_reply: true,
-                state_changed: false,
+                changed: Changed::NONE,
             }
         }
         CMD_DEFAULT_RESPONSE => NOTHING,
@@ -240,7 +409,7 @@ pub fn handle(
             default_response(out, request.seq, request.command, STATUS_UNSUP_CLUSTER_COMMAND);
             Outcome {
                 has_reply: true,
-                state_changed: false,
+                changed: Changed::NONE,
             }
         }
     }
@@ -280,11 +449,16 @@ fn configure_reporting(out: &mut Writer, cluster: u16, payload: &[u8], state: &m
         };
         r.skip(change_width);
 
+        let wanted = Reporting {
+            min_interval,
+            max_interval,
+        };
         if cluster == super::zdo::CLUSTER_ON_OFF && attribute == ATTR_ON_OFF {
-            state.on_off_reporting = Some(Reporting {
-                min_interval,
-                max_interval,
-            });
+            state.on_off_report.reporting = Some(wanted);
+            continue;
+        }
+        if cluster == super::zdo::CLUSTER_LEVEL_CONTROL && attribute == ATTR_CURRENT_LEVEL {
+            state.level_report.reporting = Some(wanted);
             continue;
         }
 
@@ -341,26 +515,63 @@ fn handle_cluster_command(
         out.u16(remaining);
         return Outcome {
             has_reply: true,
-            state_changed: false,
+            changed: Changed::NONE,
         };
     }
 
-    let mut state_changed = false;
+    let mut changed = Changed::NONE;
 
     let status = match (cluster, request.command) {
         (super::zdo::CLUSTER_ON_OFF, ON_OFF_OFF) => {
-            state_changed = state.on;
+            changed.on_off = state.on;
             state.on = false;
             STATUS_SUCCESS
         }
         (super::zdo::CLUSTER_ON_OFF, ON_OFF_ON) => {
-            state_changed = !state.on;
+            changed.on_off = !state.on;
             state.on = true;
             STATUS_SUCCESS
         }
         (super::zdo::CLUSTER_ON_OFF, ON_OFF_TOGGLE) => {
             state.on = !state.on;
-            state_changed = true;
+            changed.on_off = true;
+            STATUS_SUCCESS
+        }
+        (
+            super::zdo::CLUSTER_LEVEL_CONTROL,
+            LEVEL_MOVE_TO_LEVEL | LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
+        ) => match Reader::new(request.payload).u8() {
+            Some(level) => {
+                let with_on_off = request.command == LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF;
+                changed = state.move_to_level(level, with_on_off);
+                STATUS_SUCCESS
+            }
+            None => STATUS_INVALID_FIELD,
+        },
+        (super::zdo::CLUSTER_LEVEL_CONTROL, LEVEL_MOVE | LEVEL_MOVE_WITH_ON_OFF) => {
+            let mut r = Reader::new(request.payload);
+            match (r.u8(), r.u8()) {
+                (Some(direction), Some(rate)) if direction <= DIRECTION_DOWN && rate != 0 => {
+                    let with_on_off = request.command == LEVEL_MOVE_WITH_ON_OFF;
+                    state.start_ramp(direction == DIRECTION_UP, rate, with_on_off, now);
+                    STATUS_SUCCESS
+                }
+                _ => STATUS_INVALID_FIELD,
+            }
+        }
+        (super::zdo::CLUSTER_LEVEL_CONTROL, LEVEL_STEP | LEVEL_STEP_WITH_ON_OFF) => {
+            let mut r = Reader::new(request.payload);
+            match (r.u8(), r.u8()) {
+                (Some(direction), Some(size)) if direction <= DIRECTION_DOWN => {
+                    let with_on_off = request.command == LEVEL_STEP_WITH_ON_OFF;
+                    changed = state.step(direction == DIRECTION_UP, size, with_on_off);
+                    STATUS_SUCCESS
+                }
+                _ => STATUS_INVALID_FIELD,
+            }
+        }
+        (super::zdo::CLUSTER_LEVEL_CONTROL, LEVEL_STOP | LEVEL_STOP_WITH_ON_OFF) => {
+            state.stop();
             STATUS_SUCCESS
         }
         (super::zdo::CLUSTER_IDENTIFY, IDENTIFY) => {
@@ -374,14 +585,14 @@ fn handle_cluster_command(
     if request.disable_default_response && status == STATUS_SUCCESS {
         return Outcome {
             has_reply: false,
-            state_changed,
+            changed,
         };
     }
 
     default_response(out, request.seq, request.command, status);
     Outcome {
         has_reply: true,
-        state_changed,
+        changed,
     }
 }
 
@@ -396,6 +607,13 @@ pub fn report_on_off(out: &mut Writer, seq: u8, on: bool) {
     out.u16(ATTR_ON_OFF);
     out.u8(TYPE_BOOL);
     out.u8(on as u8);
+}
+
+pub fn report_level(out: &mut Writer, seq: u8, level: u8) {
+    header(out, false, seq, CMD_REPORT_ATTRIBUTES);
+    out.u16(ATTR_CURRENT_LEVEL);
+    out.u8(TYPE_UINT8);
+    out.u8(level);
 }
 
 #[cfg(test)]
@@ -501,6 +719,54 @@ mod tests {
         let (_, reply) = run(IDENTIFY_CLUSTER, &write, &mut state, 0);
 
         assert_eq!(reply[3], STATUS_UNSUPPORTED_ATTRIBUTE);
+    }
+
+    const LEVEL_CLUSTER: u16 = super::super::zdo::CLUSTER_LEVEL_CONTROL;
+
+    #[test]
+    fn a_move_to_level_without_a_level_is_refused() {
+        let mut state = State::default();
+        let truncated = vec![0x01, 0x61, LEVEL_MOVE_TO_LEVEL];
+
+        let (outcome, reply) = run(LEVEL_CLUSTER, &truncated, &mut state, 0);
+
+        assert!(outcome.has_reply);
+        assert_eq!(reply[4], STATUS_INVALID_FIELD);
+        assert_eq!(state.level, MAX_LEVEL, "a refused command changes nothing");
+    }
+
+    #[test]
+    fn the_coordinator_can_ask_to_hear_about_the_brightness() {
+        let mut state = State::default();
+        let mut configure = vec![0x00, 0x62, CMD_CONFIGURE_REPORTING, DIRECTION_REPORT];
+        configure.extend_from_slice(&ATTR_CURRENT_LEVEL.to_le_bytes());
+        configure.push(TYPE_UINT8);
+        configure.extend_from_slice(&1u16.to_le_bytes());
+        configure.extend_from_slice(&60u16.to_le_bytes());
+        configure.push(1);
+
+        let (_, reply) = run(LEVEL_CLUSTER, &configure, &mut state, 0);
+
+        assert_eq!(reply[3], STATUS_SUCCESS);
+        let reporting = state.level_report.reporting.expect("accepted");
+        assert_eq!(reporting.min_interval, 1);
+        assert_eq!(reporting.max_interval, 60);
+    }
+
+    #[test]
+    fn reading_the_current_level_answers_with_it() {
+        let mut state = State {
+            level: 33,
+            ..State::default()
+        };
+
+        let mut read = vec![0x00, 0x63, CMD_READ_ATTRIBUTES];
+        read.extend_from_slice(&ATTR_CURRENT_LEVEL.to_le_bytes());
+        let (_, reply) = run(LEVEL_CLUSTER, &read, &mut state, 0);
+
+        assert_eq!(reply[5], STATUS_SUCCESS);
+        assert_eq!(reply[6], TYPE_UINT8);
+        assert_eq!(reply[7], 33);
     }
 
     #[test]

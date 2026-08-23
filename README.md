@@ -15,7 +15,7 @@ espflash flash --chip esp32h2 --port /dev/cu.usbmodem101 \
 ```
 
 The device scans channels 11 to 26, joins the first Zigbee PRO network that
-accepts it, and answers the coordinator as an On/Off light. Credentials go to
+accepts it, and answers the coordinator as a dimmable light. Credentials go to
 flash, so a reboot or a firmware update rejoins without pairing again.
 
 The BOOT button on GPIO9 toggles the light locally, debounced over 25 ms. The
@@ -55,7 +55,7 @@ where the example is compiled and run as a doc test. A real one is
 | Network | headers, auxiliary security, frame counters, extended nonces |
 | Application support | data, command and ack frames, APS security, transport key |
 | Device object | announce, descriptors, endpoints, address requests, bind |
-| Clusters | Basic, Identify, On/Off, including attribute reporting |
+| Clusters | Basic, Identify, On/Off, Level Control, including attribute reporting |
 
 ## What the LED says
 
@@ -63,7 +63,7 @@ where the example is compiled and run as a doc test. A real one is
 | --- | --- |
 | blue, blinking | looking for a network |
 | green, dim | joined, light off |
-| warm white | joined, light on |
+| warm white | joined, light on, at the brightness the coordinator set |
 
 ## Zigbee2MQTT
 
@@ -77,10 +77,11 @@ holds the definition that closes that gap.
 | Copy `h2-nostd-light.mjs` into `external_converters/` | or publish it to `zigbee2mqtt/bridge/request/converter/save` |
 | Check `zigbee2mqtt/bridge/converters` | the folder proves nothing about what loaded |
 
-Both extends are there because the device earned them. `onOff()` was proven by
-round trip. `identify()` was added only after the debug log said
-`No converter available for 'identify'`, which is the line that licenses a rung
-on the ladder.
+Both extends are there because the device earned them. `identify()` was added
+only after the debug log said `No converter available for 'identify'`, which is
+the line that licenses a rung on the ladder. `light()` replaced the earlier
+`onOff()` when the Level Control cluster arrived, because one extend carries
+both the switch and the slider.
 
 The file is generated rather than written:
 

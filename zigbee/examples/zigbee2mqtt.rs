@@ -14,25 +14,36 @@
 
 use std::collections::BTreeSet;
 
-use zigbee::{APPLICATION, CLUSTER_BASIC, CLUSTER_IDENTIFY, CLUSTER_ON_OFF};
+use zigbee::{
+    APPLICATION, CLUSTER_BASIC, CLUSTER_IDENTIFY, CLUSTER_LEVEL_CONTROL, CLUSTER_ON_OFF,
+};
 
 struct Extend {
     import: &'static str,
     call: &'static str,
 }
 
-fn extend_for(cluster: u16) -> Option<Extend> {
+fn extend_for(cluster: u16, dimmable: bool) -> Option<Extend> {
     match cluster {
         CLUSTER_IDENTIFY => Some(Extend {
             import: "identify",
             call: "identify()",
         }),
+        CLUSTER_ON_OFF if dimmable => None,
         CLUSTER_ON_OFF => Some(Extend {
             import: "onOff",
             call: "onOff({powerOnBehavior: false})",
         }),
+        CLUSTER_LEVEL_CONTROL => Some(Extend {
+            import: "light",
+            call: "light({effect: false, powerOnBehavior: false, configureReporting: true})",
+        }),
         _ => None,
     }
+}
+
+fn needs_no_extend_of_its_own(cluster: u16) -> bool {
+    matches!(cluster, CLUSTER_BASIC | CLUSTER_ON_OFF)
 }
 
 struct Identity {
@@ -82,13 +93,15 @@ fn main() {
     let mut calls = Vec::new();
     let mut unmapped = Vec::new();
 
+    let dimmable = APPLICATION.clusters.contains(&CLUSTER_LEVEL_CONTROL);
+
     for &cluster in APPLICATION.clusters {
-        match extend_for(cluster) {
+        match extend_for(cluster, dimmable) {
             Some(extend) => {
                 imports.insert(extend.import);
                 calls.push(extend.call);
             }
-            None if cluster == CLUSTER_BASIC => {}
+            None if needs_no_extend_of_its_own(cluster) => {}
             None => unmapped.push(cluster),
         }
     }

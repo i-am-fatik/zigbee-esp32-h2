@@ -25,19 +25,29 @@ loop {
 ## What it does
 
 Scans for a network, associates, takes the network key from the trust centre,
-answers the coordinator's interview, and serves an On/Off light on one
+answers the coordinator's interview, and serves a dimmable light on one
 endpoint. A parent that stops answering is recovered by rejoining, which needs
 no permit-join because a device holding the network key is already a member.
 
-The application is fixed: this crate is an On/Off light, not a framework for
+The application is fixed: this crate is a dimmable light, not a framework for
 building arbitrary Zigbee devices. [`APPLICATION`] describes exactly what a
 coordinator will find.
+
+| Cluster | What a coordinator can do |
+| --- | --- |
+| Basic | read the manufacturer, model, versions and build |
+| Identify | make the light announce itself, and ask how long is left |
+| On/Off | on, off, toggle, and hear about every change |
+| Level Control | set the brightness, step it, or ramp it until told to stop |
 
 ## What it does not do
 
 No routing, no coordinator role, no sleepy end device, no install codes, no
-green power, no over-the-air updates. Frames it does not understand are
-dropped in silence.
+green power, no over-the-air updates. No colour and no scenes. A stated
+transition time is parsed and ignored, so a brightness the coordinator asks
+for arrives at once rather than fading in. A ramp started by Move does take
+time, and it advances on `tick` like everything else in the stack.
+Frames it does not understand are dropped in silence.
 
 ## Cryptography
 

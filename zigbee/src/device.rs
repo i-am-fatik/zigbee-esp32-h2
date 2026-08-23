@@ -225,6 +225,8 @@ pub enum Event {
     OnOffChanged(bool),
     /// Credentials worth writing to storage, superseding any earlier ones.
     CredentialsChanged(Credentials),
+    /// The coordinator moved the brightness, from 0 to [`crate::MAX_LEVEL`].
+    LevelChanged(u8),
 }
 
 enum Phase {
@@ -299,7 +301,7 @@ struct Outgoing {
     request_cca: bool,
 }
 
-/// A Zigbee end device: an On/Off application that joins a network, answers the
+/// A Zigbee end device: a dimmable light that joins a network, answers the
 /// coordinator's interview, and reports what it was told to do.
 pub struct Device {
     config: Config,
@@ -316,8 +318,6 @@ pub struct Device {
     nwk_seq: u8,
     aps_counter: u8,
     zdo_seq: u8,
-    report_pending: bool,
-    last_report_at: Instant,
     identifying: bool,
     consecutive_failures: u8,
     next_keepalive: Instant,
@@ -359,8 +359,6 @@ impl Device {
             nwk_seq: 0,
             aps_counter: 0,
             zdo_seq: 0,
-            report_pending: false,
-            last_report_at: Instant::from_millis(0),
             identifying: false,
             consecutive_failures: 0,
             next_keepalive: Instant::from_millis(KEEPALIVE_MS),
@@ -448,6 +446,15 @@ impl Device {
         self.application.on
     }
 
+    /// The brightness the Level Control cluster holds, from 0 to
+    /// [`crate::MAX_LEVEL`].
+    ///
+    /// It is independent of [`Device::on_off`]: a light switched off keeps the
+    /// level it will come back on at.
+    pub const fn level(&self) -> u8 {
+        self.application.level
+    }
+
     /// Whether the coordinator asked the device to make itself recognisable.
     ///
     /// A caller is expected to do something visible while this holds, which is
@@ -463,8 +470,23 @@ impl Device {
             return;
         }
         self.application.on = on;
-        self.report_pending = true;
+        self.application.on_off_report.pending = true;
         self.emit(Event::OnOffChanged(on));
+    }
+
+    /// Moves the brightness locally, which the device then reports to the
+    /// coordinator if reporting was configured. Anything above
+    /// [`crate::MAX_LEVEL`] is clamped to it, and a ramp under way is
+    /// abandoned, because a local decision outranks one already in flight.
+    pub fn set_level(&mut self, level: u8) {
+        self.application.stop();
+        let level = level.min(crate::MAX_LEVEL);
+        if self.application.level == level {
+            return;
+        }
+        self.application.level = level;
+        self.application.level_report.pending = true;
+        self.emit(Event::LevelChanged(level));
     }
 
     /// Takes the next frame to put on the air, if any.
@@ -522,6 +544,8 @@ impl Device {
     /// Lets time pass: drives scanning, association, polling and reporting.
     pub fn tick(&mut self, now: Instant) {
         self.identifying = self.application.identify_remaining(now) > 0;
+        let moved = self.application.advance(now);
+        self.publish_change(moved);
 
         if self.joined() {
             self.honour_reporting(now);
@@ -823,6 +847,19 @@ impl Device {
         self.send_application(nwk::BROADCAST_RX_ON_WHEN_IDLE, aps_frame);
     }
 
+    fn publish_change(&mut self, changed: zcl::Changed) {
+        if changed.on_off {
+            self.application.on_off_report.pending = true;
+            let on = self.application.on;
+            self.emit(Event::OnOffChanged(on));
+        }
+        if changed.level {
+            self.application.level_report.pending = true;
+            let level = self.application.level;
+            self.emit(Event::LevelChanged(level));
+        }
+    }
+
     fn report_on_off(&mut self) {
         let mut payload = [0u8; 16];
         let seq = self.next_zdo_seq();
@@ -842,23 +879,34 @@ impl Device {
         );
     }
 
-    fn honour_reporting(&mut self, now: Instant) {
-        let Some(reporting) = self.application.on_off_reporting else {
+    fn report_level(&mut self) {
+        let mut payload = [0u8; 16];
+        let seq = self.next_zdo_seq();
+        let level = self.application.level;
+        let mut body = Writer::new(&mut payload);
+        zcl::report_level(&mut body, seq, level);
+        let Some(report) = body.written() else {
             return;
         };
-        let quiet_for = now.millis_since(self.last_report_at);
-        let may_report = quiet_for >= reporting.min_interval as u32 * 1000;
-        let periodic =
-            reporting.max_interval != 0 && reporting.max_interval != zcl::INTERVAL_NEVER;
-        let must_report = periodic && quiet_for >= reporting.max_interval as u32 * 1000;
+        self.send_aps_data(
+            nwk::COORDINATOR,
+            1,
+            zdo::ENDPOINT,
+            zdo::CLUSTER_LEVEL_CONTROL,
+            aps::PROFILE_HOME_AUTOMATION,
+            report,
+        );
+    }
 
-        let due = must_report || (self.report_pending && may_report);
-        if !due {
-            return;
+    fn honour_reporting(&mut self, now: Instant) {
+        if self.application.on_off_report.due(now) {
+            self.report_on_off();
+            self.application.on_off_report.sent(now);
         }
-        self.report_on_off();
-        self.report_pending = false;
-        self.last_report_at = now;
+        if self.application.level_report.due(now) {
+            self.report_level();
+            self.application.level_report.sent(now);
+        }
     }
 
     /// Keeps the key, the network and the channel, and goes looking for a
@@ -1155,11 +1203,7 @@ impl Device {
                         body,
                     );
                 }
-                if outcome.state_changed {
-                    self.report_pending = true;
-                    let on = self.application.on;
-                    self.emit(Event::OnOffChanged(on));
-                }
+                self.publish_change(outcome.changed);
             }
             _ => {}
         }

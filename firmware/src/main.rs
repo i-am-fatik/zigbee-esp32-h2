@@ -125,6 +125,7 @@ fn main() -> ! {
                 Event::OnOffChanged(on) => {
                     println!("zcl: light is now {}", if on { "ON" } else { "OFF" })
                 }
+                Event::LevelChanged(level) => println!("zcl: brightness {}", level),
                 Event::CredentialsChanged(credentials) => {
                     store.save(&credentials);
                 }
@@ -155,7 +156,7 @@ fn main() -> ! {
                 Rgb::OFF
             }
         } else if device.on_off() {
-            LIGHT_ON.dim(140)
+            LIGHT_ON.dim(device.level())
         } else {
             IDLE_ON_NETWORK.dim(20)
         };

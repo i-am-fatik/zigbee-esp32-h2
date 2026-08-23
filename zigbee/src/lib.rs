@@ -10,7 +10,7 @@
 //! Everything the device needs to say is produced as bytes, so the same crate
 //! runs on any IEEE 802.15.4 radio and in a test with no radio at all.
 //!
-//! The application is fixed: this crate is an On/Off light on one endpoint,
+//! The application is fixed: this crate is a dimmable light on one endpoint,
 //! not a framework for building arbitrary Zigbee devices. [`APPLICATION`] is
 //! the whole of what a coordinator will find.
 //!
@@ -43,6 +43,7 @@
 //! while let Some(event) = device.next_event() {
 //!     match event {
 //!         Event::OnOffChanged(on) => light(on),
+//!         Event::LevelChanged(level) => brightness(level),
 //!         Event::CredentialsChanged(saved) => flash_write(&saved.to_bytes()),
 //!         _ => {}
 //!     }
@@ -50,6 +51,7 @@
 //! # fn radio_send(_frame: &[u8], _request_cca: bool) {}
 //! # fn radio_receive() -> Option<&'static [u8]> { None }
 //! # fn light(_on: bool) {}
+//! # fn brightness(_level: u8) {}
 //! # fn flash_write(_bytes: &[u8]) {}
 //! ```
 //!
@@ -58,7 +60,8 @@
 //! Drive [`Device::tick`] often enough that a timeout of a few hundred
 //! milliseconds is not missed, and drain [`Device::next_transmission`] and
 //! [`Device::next_event`] every turn. Both queues hold four entries and drop
-//! the oldest when full.
+//! the oldest when full. A brightness ramp advances on the same call, so the
+//! tick rate is also how smoothly the light dims.
 //!
 //! Retune the radio whenever [`Device::radio`] changes: during a scan the
 //! stack walks the channels itself, and a frame arriving on the wrong channel
@@ -140,13 +143,17 @@ pub struct Application {
     pub clusters: &'static [u16],
 }
 
-/// The On/Off light this crate ships.
+/// The dimmable light this crate ships.
 pub const APPLICATION: Application = Application {
     endpoint: zdo::ENDPOINT,
     profile: aps::PROFILE_HOME_AUTOMATION,
-    device_id: zdo::DEVICE_ID_ON_OFF_LIGHT,
+    device_id: zdo::DEVICE_ID_DIMMABLE_LIGHT,
     clusters: &zdo::INPUT_CLUSTERS,
 };
+
+/// The brightest [`Device::set_level`] and the Level Control cluster go. 0xff
+/// is reserved for "undefined", so the usable range stops one short of it.
+pub const MAX_LEVEL: u8 = zcl::MAX_LEVEL;
 
 /// The Basic cluster, which every device serves and no extend describes.
 pub const CLUSTER_BASIC: u16 = zdo::CLUSTER_BASIC;
@@ -154,3 +161,5 @@ pub const CLUSTER_BASIC: u16 = zdo::CLUSTER_BASIC;
 pub const CLUSTER_IDENTIFY: u16 = zdo::CLUSTER_IDENTIFY;
 /// The On/Off cluster.
 pub const CLUSTER_ON_OFF: u16 = zdo::CLUSTER_ON_OFF;
+/// The Level Control cluster, which carries the brightness.
+pub const CLUSTER_LEVEL_CONTROL: u16 = zdo::CLUSTER_LEVEL_CONTROL;
