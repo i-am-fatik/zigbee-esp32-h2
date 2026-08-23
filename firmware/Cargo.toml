@@ -1,12 +1,12 @@
 [package]
 name = "zigbee-h2"
 version = "0.1.0"
-description = "A Zigbee light on the ESP32-H2, running the zigbee crate on bare metal"
+description = "A Zigbee light on the ESP32-H2, running the zigbee-rs crate on bare metal"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-zigbee = { path = "../zigbee" }
+zigbee-rs = { path = "../zigbee" }
 esp-hal = { version = "1.1.2", features = ["esp32h2", "unstable"] }
 esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32h2"] }
 esp-println = { version = "0.17.0", features = ["esp32h2", "log-04"] }

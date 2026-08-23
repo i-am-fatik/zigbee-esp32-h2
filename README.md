@@ -26,7 +26,7 @@ member rather than a stranger. Only when no router answers does it fall back to
 scanning for a new network.
 
 ```sh
-cargo test -p zigbee --target aarch64-apple-darwin
+cargo test -p zigbee-rs --target aarch64-apple-darwin
 ```
 
 The stack has no hardware in its dependencies, so its tests run on the host.
@@ -80,7 +80,7 @@ on the ladder.
 The file is generated rather than written:
 
 ```sh
-cargo run -p zigbee --example zigbee2mqtt --target aarch64-apple-darwin -- \
+cargo run -p zigbee-rs --example zigbee2mqtt --target aarch64-apple-darwin -- \
     --model H2.NoStd.Light --vendor esp-rs \
     --description "ESP32-H2 no_std Rust Zigbee light" \
     > zigbee2mqtt/h2-nostd-light.mjs

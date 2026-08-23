@@ -1,4 +1,4 @@
-# zigbee
+# zigbee-rs
 
 A Zigbee end device stack for `no_std` targets, written sans-io.
 
@@ -38,6 +38,15 @@ coordinator will find.
 No routing, no coordinator role, no sleepy end device, no install codes, no
 green power, no over-the-air updates. Frames it does not understand are
 dropped in silence.
+
+## The name
+
+The crate is `zigbee-rs` on the registry because `zigbee` was already taken.
+The library it builds is `zigbee`, so every example here compiles as written.
+
+```toml
+zigbee-rs = "0.1"
+```
 
 ## Minimum supported Rust version
 

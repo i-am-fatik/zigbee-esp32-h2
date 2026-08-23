@@ -1654,13 +1654,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zigbee"
-version = "0.1.0"
-dependencies = [
- "aes",
-]
-
-[[package]]
 name = "zigbee-h2"
 version = "0.1.0"
 dependencies = [
@@ -1674,5 +1667,12 @@ dependencies = [
  "esp-radio",
  "esp-storage",
  "log",
- "zigbee",
+ "zigbee-rs",
+]
+
+[[package]]
+name = "zigbee-rs"
+version = "0.1.0"
+dependencies = [
+ "aes",
 ]
