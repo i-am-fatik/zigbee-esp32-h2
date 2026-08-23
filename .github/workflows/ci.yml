@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  library:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p zigbee-rs --all-targets --target x86_64-unknown-linux-gnu
+      - run: cargo test -p zigbee-rs --target x86_64-unknown-linux-gnu
+
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv32imac-unknown-none-elf
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --release
+      - run: cargo build --release
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.76
+      - run: cp -R zigbee "$RUNNER_TEMP/crate"
+      - run: cargo build
+        working-directory: ${{ runner.temp }}/crate
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo publish -p zigbee-rs --dry-run --target x86_64-unknown-linux-gnu
