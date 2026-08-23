@@ -39,6 +39,23 @@ No routing, no coordinator role, no sleepy end device, no install codes, no
 green power, no over-the-air updates. Frames it does not understand are
 dropped in silence.
 
+## Cryptography
+
+Zigbee mandates AES-CCM* and AES-MMO, so neither AES-GCM nor ChaCha20-Poly1305
+is available as a substitute. The two halves are not equally trustworthy and
+the difference is worth knowing before you depend on this.
+
+- **CCM\*** comes from [`ccm`](https://crates.io/crates/ccm), the RustCrypto
+  implementation. It compares the integrity code in constant time and zeroes
+  the buffer when the check fails.
+- **AES-MMO**, and the HMAC built on it, are hand-written here because no
+  reviewed crate implements them. They run only during a join, deriving the key
+  that protects the transported network key.
+
+The hand-written half has never been audited. It matches the specification and
+it decrypts a full transport-key exchange, which is evidence that it is
+is correct and no evidence at all that it resists a side channel.
+
 ## The name
 
 The crate is `zigbee-rs` on the registry because `zigbee` was already taken.
@@ -50,4 +67,9 @@ zigbee-rs = "0.1"
 
 ## Minimum supported Rust version
 
-1.76, checked by building against that toolchain.
+1.85, checked by building against that toolchain. The floor comes from the
+RustCrypto dependencies, not from this crate.
+
+## Licence
+
+Either [Apache 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.

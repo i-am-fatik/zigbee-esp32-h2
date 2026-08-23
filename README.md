@@ -113,3 +113,7 @@ espflash erase-region --port /dev/cu.usbmodem101 0x9000 0x1000
 
 The radio's analog front end is undocumented, so `esp-radio` links Espressif's
 PHY calibration blob. Everything above the PHY is Rust in this repository.
+
+## Licence
+
+Either [Apache 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
