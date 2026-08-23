@@ -138,3 +138,28 @@ pub fn group_command(group: u16, cluster: u16, seq: u8, id: u8, arguments: &[u8]
     frame.extend_from_slice(&application);
     frame
 }
+
+/// A network-layer command frame, unsecured, which is how these tests reach the
+/// commands a trust centre normally sends under the network key.
+pub fn network_command(payload: &[u8]) -> Vec<u8> {
+    let mut frame = vec![0x61, 0x88, 0x13];
+    frame.extend_from_slice(&PAN.to_le_bytes());
+    frame.extend_from_slice(&OUR_SHORT.to_le_bytes());
+    frame.extend_from_slice(&0x0000u16.to_le_bytes());
+    frame.extend_from_slice(&[0x09, 0x00]);
+    frame.extend_from_slice(&OUR_SHORT.to_le_bytes());
+    frame.extend_from_slice(&0x0000u16.to_le_bytes());
+    frame.extend_from_slice(&[30, 0x44]);
+    frame.extend_from_slice(payload);
+    frame
+}
+
+/// An unsecured Transport Key carrying a network key, which is what a trust
+/// centre sends both to let a device in and to move it to a new key.
+pub fn transport_network_key(key: &[u8; 16], sequence: u8, to: u64) -> Vec<u8> {
+    let mut application = vec![0x01, 0x08, 0x05, 0x01];
+    application.extend_from_slice(key);
+    application.push(sequence);
+    application.extend_from_slice(&to.to_le_bytes());
+    deliver(&application)
+}

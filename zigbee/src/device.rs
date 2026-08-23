@@ -525,6 +525,7 @@ pub struct Device {
     parent: u16,
     network_key: Option<[u8; KEY_LEN]>,
     key_sequence: u8,
+    next_network_key: Option<([u8; KEY_LEN], u8)>,
     phase: Phase,
     application: zcl::State,
     transport_key: [u8; KEY_LEN],
@@ -566,6 +567,7 @@ impl Device {
             parent: nwk::COORDINATOR,
             network_key: None,
             key_sequence: 0,
+            next_network_key: None,
             phase: Phase::Scanning {
                 listen_until: Instant::from_millis(0),
             },
@@ -1386,7 +1388,7 @@ impl Device {
         );
 
         let payload_range = if secured {
-            let Some(key) = self.network_key else {
+            let Some(key) = self.key_for(nwk::key_sequence(frame, header_len)) else {
                 return;
             };
             let Some(unsecured) = nwk::unsecure(frame, header_len, &key) else {
@@ -1403,6 +1405,7 @@ impl Device {
         if frame_type == nwk::FRAME_TYPE_COMMAND {
             match payload.first() {
                 Some(&nwk::CMD_LEAVE) => self.restart_scan(now),
+                Some(&nwk::CMD_SWITCH_KEY) => self.on_switch_key(payload),
                 Some(&nwk::CMD_REJOIN_RESPONSE) => {
                     if let Some(response) = nwk::parse_rejoin_response(payload) {
                         self.on_rejoin_response(response, source, now);
@@ -1445,6 +1448,38 @@ impl Device {
         }
     }
 
+    /// Picks the key a secured frame was made with. A trust centre hands out
+    /// the next network key before it tells anyone to use it, so for a while
+    /// both are live and the sequence number in the frame says which.
+    fn key_for(&self, sequence: Option<u8>) -> Option<[u8; KEY_LEN]> {
+        match (sequence, self.next_network_key) {
+            (Some(sequence), Some((key, held))) if sequence == held => Some(key),
+            _ => self.network_key,
+        }
+    }
+
+    /// A network key that arrives while already on a network is a rotation, so
+    /// it is held until the trust centre says to move to it. Using it early
+    /// would make the device deaf to everything still sent under the old one.
+    fn on_switch_key(&mut self, body: &[u8]) {
+        let Some(sequence) = nwk::parse_switch_key(body) else {
+            return;
+        };
+        let Some((key, held)) = self.next_network_key else {
+            return;
+        };
+        if held != sequence {
+            return;
+        }
+
+        self.network_key = Some(key);
+        self.key_sequence = sequence;
+        self.next_network_key = None;
+        self.counter = 0;
+        self.counter_persisted = 0;
+        self.remember();
+    }
+
     fn on_transport_key(&mut self, body: &[u8], now: Instant) {
         let Some(transport) = aps::parse_transport_key(body) else {
             return;
@@ -1453,6 +1488,10 @@ impl Device {
             return;
         }
         if transport.destination != self.config.ieee && transport.destination != 0 {
+            return;
+        }
+        if self.joined() {
+            self.next_network_key = Some((transport.key, transport.key_seq));
             return;
         }
 

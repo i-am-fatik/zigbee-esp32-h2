@@ -81,6 +81,10 @@ let config = Config::new(ieee).with_install_code(code);
 let label = zigbee::install_code_label(&code);
 ```
 
+A trust centre may also replace the network key at any time. The new key is
+held until the switch command names it, so both keys are live in between and
+frames sent under either are still read. A rotation never costs a rejoin.
+
 The code protects the join and nothing after it. Once the device holds the
 network key, its traffic is protected exactly as it was before.
 

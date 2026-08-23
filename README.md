@@ -60,7 +60,7 @@ where the example is compiled and run as a doc test. A real one is
 | --- | --- |
 | IEEE 802.15.4 MAC | frame control, addressing, beacons, association, data requests |
 | Security | AES-CCM\*, AES-MMO, HMAC, key-transport key derivation |
-| Network | headers, auxiliary security, frame counters, extended nonces |
+| Network | headers, auxiliary security, frame counters, extended nonces, key rotation |
 | Application support | data, command and ack frames, group addressing, APS security, transport key |
 | Device object | announce, descriptors, endpoints, address requests, bind |
 | Upgrade | queries a server, downloads an image, hands it over for writing |

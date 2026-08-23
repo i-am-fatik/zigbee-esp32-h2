@@ -8,6 +8,7 @@ pub const FRAME_TYPE_DATA: u16 = 0;
 pub const FRAME_TYPE_COMMAND: u16 = 1;
 
 pub const CMD_LEAVE: u8 = 0x04;
+pub const CMD_SWITCH_KEY: u8 = 0x05;
 pub const CMD_REJOIN_REQUEST: u8 = 0x06;
 pub const CMD_REJOIN_RESPONSE: u8 = 0x07;
 
@@ -139,6 +140,22 @@ pub fn parse(input: &[u8]) -> Option<Frame> {
         secured: fcf & FCF_SECURITY != 0,
         header_len,
     })
+}
+
+/// The sequence number of the key a frame was secured with, read out of the
+/// auxiliary header so a receiver can pick between the key it is using and one
+/// the trust centre has sent but not switched to yet.
+pub fn key_sequence(frame: &[u8], aux_start: usize) -> Option<u8> {
+    frame.get(aux_start + AUX_LEN - 1).copied()
+}
+
+/// The sequence number the trust centre is telling the network to move to.
+pub fn parse_switch_key(body: &[u8]) -> Option<u8> {
+    let mut r = Reader::new(body);
+    if r.u8()? != CMD_SWITCH_KEY {
+        return None;
+    }
+    r.u8()
 }
 
 pub struct RejoinResponse {
