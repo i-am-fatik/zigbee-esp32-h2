@@ -5,7 +5,7 @@ description = "A sans-io Zigbee end device stack for no_std targets"
 categories = ["embedded", "network-programming", "no-std"]
 keywords = ["zigbee", "ieee802154", "embedded", "no-std"]
 readme = "README.md"
-rust-version = "1.76"
+rust-version = "1.85"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
@@ -13,4 +13,5 @@ license = "MIT OR Apache-2.0"
 name = "zigbee"
 
 [dependencies]
-aes = { version = "0.8.4", default-features = false }
+aes = { version = "0.9.2", default-features = false }
+ccm = { version = "0.6.1", default-features = false }

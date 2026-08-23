@@ -96,12 +96,14 @@ pub fn build_secured(
     body[..payload.len()].copy_from_slice(payload);
     let body = &mut body[..payload.len()];
 
-    let mic = ccm_star_encrypt(
+    let Some(mic) = ccm_star_encrypt(
         key,
         &nonce(source_ieee, counter, security_control),
         &authenticated[..authenticated_len],
         body,
-    );
+    ) else {
+        return;
+    };
 
     out.set(aux_start, security_control & !0x07);
     out.bytes(body);

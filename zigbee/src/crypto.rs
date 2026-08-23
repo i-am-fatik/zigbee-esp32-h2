@@ -1,6 +1,9 @@
-use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockEncrypt, KeyInit};
+use aes::cipher::{BlockCipherEncrypt, KeyInit};
 use aes::Aes128;
+use ccm::aead::inout::InOutBuf;
+use ccm::aead::AeadInOut;
+use ccm::consts::{U13, U4};
+use ccm::Ccm;
 
 pub const KEY_LEN: usize = 16;
 pub const MIC_LEN: usize = 4;
@@ -8,10 +11,12 @@ pub const NONCE_LEN: usize = 13;
 
 const BLOCK: usize = 16;
 
+/// CCM* as Zigbee uses it: a 13 octet nonce, which leaves a 2 octet length
+/// field, and a 32 bit integrity code over both the header and the payload.
+type ZigbeeCcm = Ccm<Aes128, U4, U13>;
+
 fn encrypt_block(cipher: &Aes128, block: &mut [u8; BLOCK]) {
-    let mut b = GenericArray::clone_from_slice(block);
-    cipher.encrypt_block(&mut b);
-    block.copy_from_slice(&b);
+    cipher.encrypt_block(block.into());
 }
 
 fn xor_into(target: &mut [u8], source: &[u8]) {
@@ -20,77 +25,16 @@ fn xor_into(target: &mut [u8], source: &[u8]) {
     }
 }
 
-/// CCM* as Zigbee uses it: a 13 octet nonce, a 2 octet length field and a
-/// 32 bit integrity code over both the header and the payload.
-struct CcmStar {
-    cipher: Aes128,
-    nonce: [u8; NONCE_LEN],
-}
-
-impl CcmStar {
-    fn new(key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN]) -> Self {
-        Self {
-            cipher: Aes128::new(GenericArray::from_slice(key)),
-            nonce: *nonce,
-        }
-    }
-
-    fn keystream_block(&self, counter: u16) -> [u8; BLOCK] {
-        let mut block = [0u8; BLOCK];
-        block[0] = 0x01;
-        block[1..1 + NONCE_LEN].copy_from_slice(&self.nonce);
-        block[14..16].copy_from_slice(&counter.to_be_bytes());
-        encrypt_block(&self.cipher, &mut block);
-        block
-    }
-
-    fn apply_keystream(&self, payload: &mut [u8]) {
-        for (index, chunk) in payload.chunks_mut(BLOCK).enumerate() {
-            let keystream = self.keystream_block(index as u16 + 1);
-            xor_into(chunk, &keystream);
-        }
-    }
-
-    fn integrity_code(&self, header: &[u8], payload: &[u8]) -> [u8; MIC_LEN] {
-        let mut state = [0u8; BLOCK];
-        state[0] = 0x49;
-        state[1..1 + NONCE_LEN].copy_from_slice(&self.nonce);
-        state[14..16].copy_from_slice(&(payload.len() as u16).to_be_bytes());
-        encrypt_block(&self.cipher, &mut state);
-
-        let mut prefixed_header = [0u8; BLOCK];
-        prefixed_header[..2].copy_from_slice(&(header.len() as u16).to_be_bytes());
-        let split = core::cmp::min(header.len(), BLOCK - 2);
-        prefixed_header[2..2 + split].copy_from_slice(&header[..split]);
-        xor_into(&mut state, &prefixed_header);
-        encrypt_block(&self.cipher, &mut state);
-
-        for chunk in header[split..].chunks(BLOCK) {
-            xor_into(&mut state, chunk);
-            encrypt_block(&self.cipher, &mut state);
-        }
-        for chunk in payload.chunks(BLOCK) {
-            xor_into(&mut state, chunk);
-            encrypt_block(&self.cipher, &mut state);
-        }
-
-        let mut mic = [0u8; MIC_LEN];
-        mic.copy_from_slice(&state[..MIC_LEN]);
-        xor_into(&mut mic, &self.keystream_block(0));
-        mic
-    }
-}
-
 pub fn ccm_star_encrypt(
     key: &[u8; KEY_LEN],
     nonce: &[u8; NONCE_LEN],
     header: &[u8],
     payload: &mut [u8],
-) -> [u8; MIC_LEN] {
-    let ccm = CcmStar::new(key, nonce);
-    let mic = ccm.integrity_code(header, payload);
-    ccm.apply_keystream(payload);
-    mic
+) -> Option<[u8; MIC_LEN]> {
+    let tag = ZigbeeCcm::new(key.into())
+        .encrypt_inout_detached(nonce.into(), header, InOutBuf::from(payload))
+        .ok()?;
+    Some(tag.into())
 }
 
 pub fn ccm_star_decrypt(
@@ -100,9 +44,9 @@ pub fn ccm_star_decrypt(
     payload: &mut [u8],
     mic: &[u8; MIC_LEN],
 ) -> bool {
-    let ccm = CcmStar::new(key, nonce);
-    ccm.apply_keystream(payload);
-    &ccm.integrity_code(header, payload) == mic
+    ZigbeeCcm::new(key.into())
+        .decrypt_inout_detached(nonce.into(), header, InOutBuf::from(payload), mic.into())
+        .is_ok()
 }
 
 /// The Matyas-Meyer-Oseas hash Zigbee builds out of AES-128, used to turn a
@@ -111,7 +55,7 @@ pub fn aes_mmo(message: &[u8]) -> [u8; KEY_LEN] {
     let mut digest = [0u8; KEY_LEN];
 
     let absorb = |digest: &mut [u8; KEY_LEN], block: &[u8]| {
-        let cipher = Aes128::new(GenericArray::from_slice(digest));
+        let cipher = Aes128::new((&*digest).into());
         let mut encrypted = [0u8; BLOCK];
         encrypted.copy_from_slice(block);
         encrypt_block(&cipher, &mut encrypted);

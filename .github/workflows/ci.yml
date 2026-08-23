@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.76
+      - uses: dtolnay/rust-toolchain@1.85
       - run: cp -R zigbee "$RUNNER_TEMP/crate"
       - run: cargo build
         working-directory: ${{ runner.temp }}/crate
