@@ -15,35 +15,56 @@
 use std::collections::BTreeSet;
 
 use zigbee::{
-    APPLICATION, CLUSTER_BASIC, CLUSTER_IDENTIFY, CLUSTER_LEVEL_CONTROL, CLUSTER_ON_OFF,
+    APPLICATION, CLUSTER_BASIC, CLUSTER_COLOUR_CONTROL, CLUSTER_IDENTIFY, CLUSTER_LEVEL_CONTROL,
+    CLUSTER_ON_OFF, COLOUR_TEMPERATURE_MIREDS,
 };
 
 struct Extend {
     import: &'static str,
-    call: &'static str,
+    call: String,
 }
 
-fn extend_for(cluster: u16, dimmable: bool) -> Option<Extend> {
+/// One `light()` covers the switch, the brightness and whatever colour the
+/// device serves, so its arguments are read off the cluster list rather than
+/// written down.
+fn light(colour: bool) -> String {
+    let mut arguments = vec![
+        "effect: false".to_string(),
+        "powerOnBehavior: false".to_string(),
+        "configureReporting: true".to_string(),
+    ];
+    if colour {
+        arguments.push("color: {modes: ['hs']}".to_string());
+        arguments.push(format!(
+            "colorTemp: {{range: [{}, {}]}}",
+            COLOUR_TEMPERATURE_MIREDS.start(),
+            COLOUR_TEMPERATURE_MIREDS.end()
+        ));
+    }
+    format!("light({{{}}})", arguments.join(", "))
+}
+
+fn extend_for(cluster: u16, dimmable: bool, colour: bool) -> Option<Extend> {
     match cluster {
         CLUSTER_IDENTIFY => Some(Extend {
             import: "identify",
-            call: "identify()",
+            call: "identify()".to_string(),
         }),
         CLUSTER_ON_OFF if dimmable => None,
         CLUSTER_ON_OFF => Some(Extend {
             import: "onOff",
-            call: "onOff({powerOnBehavior: false})",
+            call: "onOff({powerOnBehavior: false})".to_string(),
         }),
         CLUSTER_LEVEL_CONTROL => Some(Extend {
             import: "light",
-            call: "light({effect: false, powerOnBehavior: false, configureReporting: true})",
+            call: light(colour),
         }),
         _ => None,
     }
 }
 
 fn needs_no_extend_of_its_own(cluster: u16) -> bool {
-    matches!(cluster, CLUSTER_BASIC | CLUSTER_ON_OFF)
+    matches!(cluster, CLUSTER_BASIC | CLUSTER_ON_OFF | CLUSTER_COLOUR_CONTROL)
 }
 
 struct Identity {
@@ -94,9 +115,10 @@ fn main() {
     let mut unmapped = Vec::new();
 
     let dimmable = APPLICATION.clusters.contains(&CLUSTER_LEVEL_CONTROL);
+    let colour = APPLICATION.clusters.contains(&CLUSTER_COLOUR_CONTROL);
 
     for &cluster in APPLICATION.clusters {
-        match extend_for(cluster, dimmable) {
+        match extend_for(cluster, dimmable, colour) {
             Some(extend) => {
                 imports.insert(extend.import);
                 calls.push(extend.call);
@@ -107,6 +129,7 @@ fn main() {
     }
 
     let imports: Vec<_> = imports.into_iter().collect();
+    let calls: Vec<_> = calls.iter().map(String::as_str).collect();
     println!(
         "import {{{}}} from 'zigbee-herdsman-converters/lib/modernExtend';",
         imports.join(", ")

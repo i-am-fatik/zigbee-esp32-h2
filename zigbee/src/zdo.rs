@@ -20,18 +20,20 @@ pub const STATUS_SUCCESS: u8 = 0x00;
 pub const STATUS_NOT_SUPPORTED: u8 = 0x84;
 
 pub const ENDPOINT: u8 = 1;
-pub const DEVICE_ID_DIMMABLE_LIGHT: u16 = 0x0101;
+pub const DEVICE_ID_COLOUR_LIGHT: u16 = 0x0102;
 
 pub const CLUSTER_BASIC: u16 = 0x0000;
 pub const CLUSTER_IDENTIFY: u16 = 0x0003;
 pub const CLUSTER_ON_OFF: u16 = 0x0006;
 pub const CLUSTER_LEVEL_CONTROL: u16 = 0x0008;
+pub const CLUSTER_COLOUR_CONTROL: u16 = 0x0300;
 
-pub(crate) const INPUT_CLUSTERS: [u16; 4] = [
+pub(crate) const INPUT_CLUSTERS: [u16; 5] = [
     CLUSTER_BASIC,
     CLUSTER_IDENTIFY,
     CLUSTER_ON_OFF,
     CLUSTER_LEVEL_CONTROL,
+    CLUSTER_COLOUR_CONTROL,
 ];
 
 pub fn device_announce(out: &mut Writer, seq: u8, short: u16, ieee: u64, capability: u8) {
@@ -62,7 +64,7 @@ fn power_descriptor(out: &mut Writer) {
 
 fn simple_descriptor(out: &mut Writer) {
     out.u16(super::aps::PROFILE_HOME_AUTOMATION);
-    out.u16(DEVICE_ID_DIMMABLE_LIGHT);
+    out.u16(DEVICE_ID_COLOUR_LIGHT);
     out.u8(0x01);
     out.u8(INPUT_CLUSTERS.len() as u8);
     for cluster in INPUT_CLUSTERS {

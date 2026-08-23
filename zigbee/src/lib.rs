@@ -10,7 +10,7 @@
 //! Everything the device needs to say is produced as bytes, so the same crate
 //! runs on any IEEE 802.15.4 radio and in a test with no radio at all.
 //!
-//! The application is fixed: this crate is a dimmable light on one endpoint,
+//! The application is fixed: this crate is a colour light on one endpoint,
 //! not a framework for building arbitrary Zigbee devices. [`APPLICATION`] is
 //! the whole of what a coordinator will find.
 //!
@@ -91,7 +91,7 @@ mod nwk;
 mod zcl;
 mod zdo;
 
-pub use device::{Config, Credentials, Device, Event, RadioConfig, Transmission};
+pub use device::{Colour, Config, Credentials, Device, Event, RadioConfig, Transmission};
 
 /// A point on a monotonic millisecond clock.
 ///
@@ -143,17 +143,29 @@ pub struct Application {
     pub clusters: &'static [u16],
 }
 
-/// The dimmable light this crate ships.
+/// The colour light this crate ships.
 pub const APPLICATION: Application = Application {
     endpoint: zdo::ENDPOINT,
     profile: aps::PROFILE_HOME_AUTOMATION,
-    device_id: zdo::DEVICE_ID_DIMMABLE_LIGHT,
+    device_id: zdo::DEVICE_ID_COLOUR_LIGHT,
     clusters: &zdo::INPUT_CLUSTERS,
 };
 
 /// The brightest [`Device::set_level`] and the Level Control cluster go. 0xff
 /// is reserved for "undefined", so the usable range stops one short of it.
 pub const MAX_LEVEL: u8 = zcl::MAX_LEVEL;
+
+/// The furthest round the colour wheel a hue goes before it comes back to
+/// where it started.
+pub const MAX_HUE: u8 = zcl::MAX_HUE;
+
+/// The furthest a colour gets from white.
+pub const MAX_SATURATION: u8 = zcl::MAX_SATURATION;
+
+/// The colour temperatures the light accepts, in mireds. A bridge is expected
+/// to read this range off the device rather than assume one.
+pub const COLOUR_TEMPERATURE_MIREDS: core::ops::RangeInclusive<u16> =
+    zcl::COOLEST_MIREDS..=zcl::WARMEST_MIREDS;
 
 /// The Basic cluster, which every device serves and no extend describes.
 pub const CLUSTER_BASIC: u16 = zdo::CLUSTER_BASIC;
@@ -163,3 +175,5 @@ pub const CLUSTER_IDENTIFY: u16 = zdo::CLUSTER_IDENTIFY;
 pub const CLUSTER_ON_OFF: u16 = zdo::CLUSTER_ON_OFF;
 /// The Level Control cluster, which carries the brightness.
 pub const CLUSTER_LEVEL_CONTROL: u16 = zdo::CLUSTER_LEVEL_CONTROL;
+/// The Colour Control cluster.
+pub const CLUSTER_COLOUR_CONTROL: u16 = zdo::CLUSTER_COLOUR_CONTROL;

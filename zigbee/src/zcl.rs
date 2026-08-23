@@ -33,6 +33,45 @@ pub const LEVEL_MOVE_WITH_ON_OFF: u8 = 0x05;
 pub const LEVEL_STEP_WITH_ON_OFF: u8 = 0x06;
 pub const LEVEL_STOP_WITH_ON_OFF: u8 = 0x07;
 
+pub const COLOUR_MOVE_TO_HUE: u8 = 0x00;
+pub const COLOUR_STEP_HUE: u8 = 0x02;
+pub const COLOUR_MOVE_TO_SATURATION: u8 = 0x03;
+pub const COLOUR_STEP_SATURATION: u8 = 0x05;
+pub const COLOUR_MOVE_TO_HUE_AND_SATURATION: u8 = 0x06;
+pub const COLOUR_MOVE_TO_TEMPERATURE: u8 = 0x0a;
+pub const COLOUR_STOP: u8 = 0x47;
+
+pub const ATTR_CURRENT_HUE: u16 = 0x0000;
+pub const ATTR_CURRENT_SATURATION: u16 = 0x0001;
+pub const ATTR_COLOUR_TEMPERATURE: u16 = 0x0007;
+pub const ATTR_COLOUR_MODE: u16 = 0x0008;
+pub const ATTR_ENHANCED_COLOUR_MODE: u16 = 0x4001;
+pub const ATTR_COLOUR_CAPABILITIES: u16 = 0x400a;
+pub const ATTR_TEMPERATURE_MIN_MIREDS: u16 = 0x400b;
+pub const ATTR_TEMPERATURE_MAX_MIREDS: u16 = 0x400c;
+
+pub const COLOUR_MODE_HUE_SATURATION: u8 = 0x00;
+pub const COLOUR_MODE_TEMPERATURE: u8 = 0x02;
+
+pub const MAX_HUE: u8 = 0xfe;
+pub const MAX_SATURATION: u8 = 0xfe;
+
+/// A mired is a million over the colour temperature in kelvin, so the smaller
+/// number is the cooler light. This range is roughly 6500 K down to 2000 K.
+pub const COOLEST_MIREDS: u16 = 153;
+pub const WARMEST_MIREDS: u16 = 500;
+
+/// Hue and saturation, and colour temperature. Neither the XY space nor the
+/// enhanced hue, so a bridge that wants those converts on its own side.
+const COLOUR_CAPABILITIES: u16 = 0x0011;
+
+/// The full circle hue travels around, which is one more than the brightest
+/// hue because the range starts at zero.
+const HUE_STEPS: u16 = MAX_HUE as u16 + 1;
+
+const STEP_UP: u8 = 0x01;
+const STEP_DOWN: u8 = 0x03;
+
 const DIRECTION_UP: u8 = 0x00;
 const DIRECTION_DOWN: u8 = 0x01;
 
@@ -50,6 +89,7 @@ const TYPE_BOOL: u8 = 0x10;
 const TYPE_UINT8: u8 = 0x20;
 const TYPE_UINT16: u8 = 0x21;
 const TYPE_ENUM8: u8 = 0x30;
+const TYPE_BITMAP16: u8 = 0x19;
 const TYPE_STRING: u8 = 0x42;
 
 const STATUS_SUCCESS: u8 = 0x00;
@@ -154,6 +194,28 @@ fn write_attribute(
         (super::zdo::CLUSTER_LEVEL_CONTROL, ATTR_CURRENT_LEVEL) => {
             out.u8(TYPE_UINT8).u8(state.level);
         }
+        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_CURRENT_HUE) => {
+            out.u8(TYPE_UINT8).u8(state.hue);
+        }
+        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_CURRENT_SATURATION) => {
+            out.u8(TYPE_UINT8).u8(state.saturation);
+        }
+        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_TEMPERATURE) => {
+            out.u8(TYPE_UINT16).u16(state.mireds);
+        }
+        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_MODE)
+        | (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_ENHANCED_COLOUR_MODE) => {
+            out.u8(TYPE_ENUM8).u8(state.colour_mode);
+        }
+        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_CAPABILITIES) => {
+            out.u8(TYPE_BITMAP16).u16(COLOUR_CAPABILITIES);
+        }
+        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_TEMPERATURE_MIN_MIREDS) => {
+            out.u8(TYPE_UINT16).u16(COOLEST_MIREDS);
+        }
+        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_TEMPERATURE_MAX_MIREDS) => {
+            out.u8(TYPE_UINT16).u16(WARMEST_MIREDS);
+        }
         _ => return false,
     }
     true
@@ -206,12 +268,14 @@ impl Reportable {
 pub struct Changed {
     pub on_off: bool,
     pub level: bool,
+    pub colour: bool,
 }
 
 impl Changed {
     pub const NONE: Self = Self {
         on_off: false,
         level: false,
+        colour: false,
     };
 }
 
@@ -229,6 +293,10 @@ struct Ramp {
 pub struct State {
     pub on: bool,
     pub level: u8,
+    pub hue: u8,
+    pub saturation: u8,
+    pub mireds: u16,
+    pub colour_mode: u8,
     pub identify_until: Option<Instant>,
     pub on_off_report: Reportable,
     pub level_report: Reportable,
@@ -240,6 +308,10 @@ impl Default for State {
         Self {
             on: false,
             level: MAX_LEVEL,
+            hue: 0,
+            saturation: 0,
+            mireds: 370,
+            colour_mode: COLOUR_MODE_TEMPERATURE,
             identify_until: None,
             on_off_report: Reportable::default(),
             level_report: Reportable::default(),
@@ -269,8 +341,8 @@ impl State {
     fn settle(&mut self, level: u8, with_on_off: bool) -> Changed {
         let level = level.min(MAX_LEVEL);
         let mut changed = Changed {
-            on_off: false,
             level: self.level != level,
+            ..Changed::NONE
         };
         self.level = level;
 
@@ -310,6 +382,52 @@ impl State {
     /// Abandons any move under way, leaving the brightness where it reached.
     pub fn stop(&mut self) {
         self.ramp = None;
+    }
+
+    fn set_hue_and_saturation(&mut self, hue: u8, saturation: u8) -> Changed {
+        let hue = hue.min(MAX_HUE);
+        let saturation = saturation.min(MAX_SATURATION);
+        let changed = Changed {
+            colour: self.hue != hue
+                || self.saturation != saturation
+                || self.colour_mode != COLOUR_MODE_HUE_SATURATION,
+            ..Changed::NONE
+        };
+        self.hue = hue;
+        self.saturation = saturation;
+        self.colour_mode = COLOUR_MODE_HUE_SATURATION;
+        changed
+    }
+
+    fn set_mireds(&mut self, mireds: u16) -> Changed {
+        let mireds = mireds.clamp(COOLEST_MIREDS, WARMEST_MIREDS);
+        let changed = Changed {
+            colour: self.mireds != mireds || self.colour_mode != COLOUR_MODE_TEMPERATURE,
+            ..Changed::NONE
+        };
+        self.mireds = mireds;
+        self.colour_mode = COLOUR_MODE_TEMPERATURE;
+        changed
+    }
+
+    /// Hue is a circle, so a step off either end comes back on the other.
+    fn step_hue(&mut self, up: bool, size: u8) -> Changed {
+        let size = size as u16 % HUE_STEPS;
+        let moved = if up {
+            self.hue as u16 + size
+        } else {
+            self.hue as u16 + HUE_STEPS - size
+        };
+        self.set_hue_and_saturation((moved % HUE_STEPS) as u8, self.saturation)
+    }
+
+    fn step_saturation(&mut self, up: bool, size: u8) -> Changed {
+        let moved = if up {
+            self.saturation.saturating_add(size)
+        } else {
+            self.saturation.saturating_sub(size)
+        };
+        self.set_hue_and_saturation(self.hue, moved)
     }
 
     /// Carries a move under way forward to where it should be by now, and ends
@@ -574,6 +692,59 @@ fn handle_cluster_command(
             state.stop();
             STATUS_SUCCESS
         }
+        (super::zdo::CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_TO_HUE) => {
+            match Reader::new(request.payload).u8() {
+                Some(hue) => {
+                    changed = state.set_hue_and_saturation(hue, state.saturation);
+                    STATUS_SUCCESS
+                }
+                None => STATUS_INVALID_FIELD,
+            }
+        }
+        (super::zdo::CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_TO_SATURATION) => {
+            match Reader::new(request.payload).u8() {
+                Some(saturation) => {
+                    changed = state.set_hue_and_saturation(state.hue, saturation);
+                    STATUS_SUCCESS
+                }
+                None => STATUS_INVALID_FIELD,
+            }
+        }
+        (super::zdo::CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_TO_HUE_AND_SATURATION) => {
+            let mut r = Reader::new(request.payload);
+            match (r.u8(), r.u8()) {
+                (Some(hue), Some(saturation)) => {
+                    changed = state.set_hue_and_saturation(hue, saturation);
+                    STATUS_SUCCESS
+                }
+                _ => STATUS_INVALID_FIELD,
+            }
+        }
+        (super::zdo::CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_TO_TEMPERATURE) => {
+            match Reader::new(request.payload).u16() {
+                Some(mireds) => {
+                    changed = state.set_mireds(mireds);
+                    STATUS_SUCCESS
+                }
+                None => STATUS_INVALID_FIELD,
+            }
+        }
+        (super::zdo::CLUSTER_COLOUR_CONTROL, COLOUR_STEP_HUE | COLOUR_STEP_SATURATION) => {
+            let mut r = Reader::new(request.payload);
+            match (r.u8(), r.u8()) {
+                (Some(mode), Some(size)) if mode == STEP_UP || mode == STEP_DOWN => {
+                    let up = mode == STEP_UP;
+                    changed = if request.command == COLOUR_STEP_HUE {
+                        state.step_hue(up, size)
+                    } else {
+                        state.step_saturation(up, size)
+                    };
+                    STATUS_SUCCESS
+                }
+                _ => STATUS_INVALID_FIELD,
+            }
+        }
+        (super::zdo::CLUSTER_COLOUR_CONTROL, COLOUR_STOP) => STATUS_SUCCESS,
         (super::zdo::CLUSTER_IDENTIFY, IDENTIFY) => {
             let seconds = Reader::new(request.payload).u16().unwrap_or(0);
             state.identify_for(seconds, now);
@@ -767,6 +938,63 @@ mod tests {
         assert_eq!(reply[5], STATUS_SUCCESS);
         assert_eq!(reply[6], TYPE_UINT8);
         assert_eq!(reply[7], 33);
+    }
+
+    const COLOUR_CLUSTER: u16 = super::super::zdo::CLUSTER_COLOUR_CONTROL;
+
+    fn read(cluster: u16, attribute: u16, state: &mut State) -> Vec<u8> {
+        let mut request = vec![0x00, 0x70, CMD_READ_ATTRIBUTES];
+        request.extend_from_slice(&attribute.to_le_bytes());
+        let (_, reply) = run(cluster, &request, state, 0);
+        reply
+    }
+
+    #[test]
+    fn the_capabilities_claim_hue_saturation_and_temperature_and_nothing_else() {
+        let mut state = State::default();
+        let reply = read(COLOUR_CLUSTER, ATTR_COLOUR_CAPABILITIES, &mut state);
+
+        assert_eq!(reply[5], STATUS_SUCCESS);
+        assert_eq!(reply[6], TYPE_BITMAP16);
+        assert_eq!(u16::from_le_bytes([reply[7], reply[8]]), 0x0011);
+    }
+
+    #[test]
+    fn the_mired_range_is_readable_so_a_bridge_need_not_assume_one() {
+        let mut state = State::default();
+
+        let coolest = read(COLOUR_CLUSTER, ATTR_TEMPERATURE_MIN_MIREDS, &mut state);
+        assert_eq!(u16::from_le_bytes([coolest[7], coolest[8]]), COOLEST_MIREDS);
+
+        let warmest = read(COLOUR_CLUSTER, ATTR_TEMPERATURE_MAX_MIREDS, &mut state);
+        assert_eq!(u16::from_le_bytes([warmest[7], warmest[8]]), WARMEST_MIREDS);
+    }
+
+    #[test]
+    fn the_colour_mode_says_which_of_the_two_is_live() {
+        let mut state = State::default();
+        let white = read(COLOUR_CLUSTER, ATTR_COLOUR_MODE, &mut state);
+        assert_eq!(white[6], TYPE_ENUM8);
+        assert_eq!(white[7], COLOUR_MODE_TEMPERATURE);
+
+        state.set_hue_and_saturation(100, 200);
+        let wheel = read(COLOUR_CLUSTER, ATTR_COLOUR_MODE, &mut state);
+        assert_eq!(wheel[7], COLOUR_MODE_HUE_SATURATION);
+    }
+
+    #[test]
+    fn a_colour_attribute_is_not_reportable_and_says_so() {
+        let mut state = State::default();
+        let mut configure = vec![0x00, 0x71, CMD_CONFIGURE_REPORTING, DIRECTION_REPORT];
+        configure.extend_from_slice(&ATTR_CURRENT_HUE.to_le_bytes());
+        configure.push(TYPE_UINT8);
+        configure.extend_from_slice(&1u16.to_le_bytes());
+        configure.extend_from_slice(&60u16.to_le_bytes());
+        configure.push(1);
+
+        let (_, reply) = run(COLOUR_CLUSTER, &configure, &mut state, 0);
+
+        assert_eq!(reply[3], STATUS_UNSUPPORTED_ATTRIBUTE);
     }
 
     #[test]

@@ -2,44 +2,10 @@
 //! and asserts it stays alive. Everything here goes in through `receive`, the
 //! one door the radio has.
 
-use zigbee::{Config, Device, Instant, APPLICATION, CLUSTER_BASIC};
+mod common;
 
-const OUR_IEEE: u64 = 0x0011_2233_4455_6677;
-const PAN: u16 = 0xa269;
-const OUR_SHORT: u16 = 0x4560;
-
-fn device() -> Device {
-    Device::new(Config::new(OUR_IEEE))
-}
-
-fn drain(device: &mut Device) {
-    while device.next_transmission().is_some() {}
-    while device.next_event().is_some() {}
-}
-
-/// A MAC data frame carrying an unsecured network frame, which is how a
-/// coordinator talks to a device that does not hold the network key yet.
-fn deliver(application: &[u8]) -> Vec<u8> {
-    let mut frame = vec![0x61, 0x88, 0x11];
-    frame.extend_from_slice(&PAN.to_le_bytes());
-    frame.extend_from_slice(&OUR_SHORT.to_le_bytes());
-    frame.extend_from_slice(&0x0000u16.to_le_bytes());
-    frame.extend_from_slice(&[0x08, 0x00]);
-    frame.extend_from_slice(&OUR_SHORT.to_le_bytes());
-    frame.extend_from_slice(&0x0000u16.to_le_bytes());
-    frame.extend_from_slice(&[30, 0x42]);
-    frame.extend_from_slice(application);
-    frame
-}
-
-fn application_frame(cluster: u16, payload: &[u8]) -> Vec<u8> {
-    let mut frame = vec![0x00, APPLICATION.endpoint];
-    frame.extend_from_slice(&cluster.to_le_bytes());
-    frame.extend_from_slice(&APPLICATION.profile.to_le_bytes());
-    frame.extend_from_slice(&[0x01, 0x07]);
-    frame.extend_from_slice(payload);
-    frame
-}
+use common::{application_frame, at, deliver, device, drain};
+use zigbee::CLUSTER_BASIC;
 
 fn next(seed: &mut u32) -> u8 {
     *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -53,8 +19,8 @@ fn nonsense_of_every_length_is_survivable() {
         for _round in 0..30 {
             let frame: Vec<u8> = (0..len).map(|_| next(&mut seed)).collect();
             let mut device = device();
-            device.receive(&frame, Instant::from_millis(0));
-            device.tick(Instant::from_millis(1));
+            device.receive(&frame, at(0));
+            device.tick(at(1));
             drain(&mut device);
             assert!(!device.joined());
         }
@@ -70,8 +36,8 @@ fn a_well_formed_frame_with_a_mangled_tail_is_survivable() {
             let mut frame = template[..cut].to_vec();
             frame.extend((0..template.len() - cut).map(|_| next(&mut seed)));
             let mut device = device();
-            device.receive(&frame, Instant::from_millis(0));
-            device.tick(Instant::from_millis(1));
+            device.receive(&frame, at(0));
+            device.tick(at(1));
             drain(&mut device);
         }
     }
@@ -91,8 +57,8 @@ fn a_reply_larger_than_the_frame_it_answers_is_survivable() {
             break;
         }
         let mut device = device();
-        device.receive(&frame, Instant::from_millis(0));
-        device.tick(Instant::from_millis(1));
+        device.receive(&frame, at(0));
+        device.tick(at(1));
         drain(&mut device);
     }
 }

@@ -13,7 +13,7 @@ use esp_hal::main;
 use esp_hal::time::Instant as HalInstant;
 use esp_println::println;
 use esp_radio::ieee802154::Ieee802154;
-use zigbee::{Config, Device, Event, Instant};
+use zigbee::{Colour, Config, Device, Event, Instant};
 
 use button::Button;
 use led::{AddressableLed, Rgb};
@@ -26,7 +26,6 @@ esp_bootloader_esp_idf::esp_app_desc!();
 /// switched on by the coordinator.
 const SEARCHING: Rgb = Rgb::new(0, 0, 60);
 const IDLE_ON_NETWORK: Rgb = Rgb::new(0, 40, 0);
-const LIGHT_ON: Rgb = Rgb::new(255, 170, 70);
 
 const IDENTIFYING: Rgb = Rgb::new(255, 255, 255);
 
@@ -39,6 +38,16 @@ fn our_extended_address() -> u64 {
     u64::from_be_bytes([
         mac[0], mac[1], mac[2], 0xff, 0xfe, mac[3], mac[4], mac[5],
     ])
+}
+
+fn lit(colour: Colour, level: u8) -> Rgb {
+    match colour {
+        Colour::HueSaturation { hue, saturation } => {
+            Rgb::from_hue_and_saturation(hue, saturation, level)
+        }
+        Colour::Temperature { mireds } => Rgb::from_mireds(mireds, level),
+        _ => Rgb::from_hue_and_saturation(0, 0, level),
+    }
 }
 
 fn now() -> Instant {
@@ -126,6 +135,7 @@ fn main() -> ! {
                     println!("zcl: light is now {}", if on { "ON" } else { "OFF" })
                 }
                 Event::LevelChanged(level) => println!("zcl: brightness {}", level),
+                Event::ColourChanged(colour) => println!("zcl: colour {:?}", colour),
                 Event::CredentialsChanged(credentials) => {
                     store.save(&credentials);
                 }
@@ -156,7 +166,7 @@ fn main() -> ! {
                 Rgb::OFF
             }
         } else if device.on_off() {
-            LIGHT_ON.dim(device.level())
+            lit(device.colour(), device.level())
         } else {
             IDLE_ON_NETWORK.dim(20)
         };

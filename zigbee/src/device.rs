@@ -207,6 +207,28 @@ pub struct Transmission<'a> {
     pub request_cca: bool,
 }
 
+/// How the light was last told to colour itself.
+///
+/// The two are alternatives rather than layers: setting one replaces the other,
+/// and [`Device::colour`] reports whichever the coordinator asked for last.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum Colour {
+    /// A point on the colour wheel.
+    HueSaturation {
+        /// Position around the wheel, 0 to 254.
+        hue: u8,
+        /// How far from white, 0 being white, up to 254.
+        saturation: u8,
+    },
+    /// A white, stated as a colour temperature.
+    Temperature {
+        /// Mireds, a million over kelvin, so the smaller number is the cooler
+        /// light. From 153, about 6500 K, to 500, about 2000 K.
+        mireds: u16,
+    },
+}
+
 /// Something happened that the caller may want to act on.
 ///
 /// The enum grows by variant, so match it with a wildcard arm. The variants
@@ -227,6 +249,8 @@ pub enum Event {
     CredentialsChanged(Credentials),
     /// The coordinator moved the brightness, from 0 to [`crate::MAX_LEVEL`].
     LevelChanged(u8),
+    /// The coordinator moved the colour, or switched which way it is stated.
+    ColourChanged(Colour),
 }
 
 enum Phase {
@@ -301,7 +325,7 @@ struct Outgoing {
     request_cca: bool,
 }
 
-/// A Zigbee end device: a dimmable light that joins a network, answers the
+/// A Zigbee end device: a colour light that joins a network, answers the
 /// coordinator's interview, and reports what it was told to do.
 pub struct Device {
     config: Config,
@@ -444,6 +468,22 @@ impl Device {
     /// The state of the On/Off application.
     pub const fn on_off(&self) -> bool {
         self.application.on
+    }
+
+    /// The colour the light was last told to be.
+    ///
+    /// It is independent of [`Device::on_off`] and [`Device::level`], which
+    /// say whether the light is lit and how brightly.
+    pub const fn colour(&self) -> Colour {
+        match self.application.colour_mode {
+            zcl::COLOUR_MODE_TEMPERATURE => Colour::Temperature {
+                mireds: self.application.mireds,
+            },
+            _ => Colour::HueSaturation {
+                hue: self.application.hue,
+                saturation: self.application.saturation,
+            },
+        }
     }
 
     /// The brightness the Level Control cluster holds, from 0 to
@@ -857,6 +897,10 @@ impl Device {
             self.application.level_report.pending = true;
             let level = self.application.level;
             self.emit(Event::LevelChanged(level));
+        }
+        if changed.colour {
+            let colour = self.colour();
+            self.emit(Event::ColourChanged(colour));
         }
     }
 
