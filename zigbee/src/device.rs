@@ -32,7 +32,7 @@ const OUTBOX_CAPACITY: usize = 4;
 const EVENT_CAPACITY: usize = 4;
 
 /// What the device tells the world about itself during the interview.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Config {
     ieee: u64,
     manufacturer: &'static str,
@@ -84,6 +84,9 @@ impl Config {
 /// The contents are deliberately opaque. Persist the bytes from
 /// [`Credentials::to_bytes`] and hand them back through
 /// [`Credentials::from_bytes`] after a restart.
+///
+/// Those bytes carry the network key, so storage that anyone else can read is
+/// storage that hands them the network. The `Debug` output omits the key.
 #[derive(Clone, Copy)]
 pub struct Credentials {
     pan_id: u16,
@@ -102,6 +105,17 @@ impl Credentials {
     const MAGIC: u32 = 0x5a42_4832;
 
     /// Encodes the credentials for storage.
+    ///
+    /// ```
+    /// # use zigbee::{Config, Credentials, Device, Event, Instant};
+    /// # fn persist(device: &mut Device, flash: &mut [u8; Credentials::SIZE]) {
+    /// while let Some(event) = device.next_event() {
+    ///     if let Event::CredentialsChanged(saved) = event {
+    ///         *flash = saved.to_bytes();
+    ///     }
+    /// }
+    /// # }
+    /// ```
     pub fn to_bytes(&self) -> [u8; Self::SIZE] {
         let mut record = [0u8; Self::SIZE];
         record[0..4].copy_from_slice(&Self::MAGIC.to_le_bytes());
@@ -117,6 +131,21 @@ impl Credentials {
 
     /// Decodes credentials produced by [`Credentials::to_bytes`], rejecting
     /// anything that is not a record this version wrote.
+    ///
+    /// Blank flash, flash written by an older layout, and flash holding
+    /// something else all read back as `None`, which is the signal to join
+    /// from scratch instead.
+    ///
+    /// ```
+    /// # use zigbee::{Config, Credentials, Device};
+    /// # let flash = [0u8; Credentials::SIZE];
+    /// # let config = Config::new(0x0011_2233_4455_6677);
+    /// let device = match Credentials::from_bytes(&flash) {
+    ///     Some(saved) => Device::restore(config, saved),
+    ///     None => Device::new(config),
+    /// };
+    /// # let _ = device;
+    /// ```
     pub fn from_bytes(record: &[u8; Self::SIZE]) -> Option<Self> {
         if u32::from_le_bytes([record[0], record[1], record[2], record[3]]) != Self::MAGIC {
             return None;
@@ -145,8 +174,20 @@ impl Credentials {
     }
 }
 
+impl core::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("pan_id", &self.pan_id)
+            .field("short_address", &self.short_address)
+            .field("parent", &self.parent)
+            .field("channel", &self.channel)
+            .finish_non_exhaustive()
+    }
+}
+
 /// How the radio must be tuned and addressed for the stack to hear its traffic.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub struct RadioConfig {
     /// The IEEE 802.15.4 channel to listen on.
     pub channel: u8,
@@ -157,6 +198,8 @@ pub struct RadioConfig {
 }
 
 /// A frame the caller should put on the air.
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct Transmission<'a> {
     /// The MAC frame, without the physical length byte and without the checksum.
     pub frame: &'a [u8],
@@ -165,7 +208,10 @@ pub struct Transmission<'a> {
 }
 
 /// Something happened that the caller may want to act on.
-#[derive(Clone, Copy)]
+///
+/// The enum grows by variant, so match it with a wildcard arm. The variants
+/// themselves are frozen.
+#[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub enum Event {
     /// The device is on a network and has the network key.
@@ -279,6 +325,16 @@ pub struct Device {
     events: Queue<Option<Event>, EVENT_CAPACITY>,
 }
 
+impl core::fmt::Debug for Device {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Device")
+            .field("radio", &self.radio)
+            .field("joined", &self.joined())
+            .field("on", &self.application.on)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Device {
     /// Builds a device that has to find and join a network.
     pub fn new(config: Config) -> Self {
@@ -351,6 +407,24 @@ impl Device {
     /// A radio reports this when it exhausts its attempts. Enough of them in a
     /// row means the parent has stopped listening, and the device goes looking
     /// for another one rather than talking into an empty room.
+    ///
+    /// A caller that never reports delivery keeps a device talking to a parent
+    /// that stopped answering, so report both outcomes of every send.
+    ///
+    /// ```
+    /// # use zigbee::{Device, Instant};
+    /// # fn send(_frame: &[u8], _request_cca: bool) -> bool { true }
+    /// # fn drive(device: &mut Device, now: Instant) {
+    /// while let Some(outgoing) = device.next_transmission() {
+    ///     let delivered = send(outgoing.frame, outgoing.request_cca);
+    ///     if delivered {
+    ///         device.transmission_delivered();
+    ///     } else {
+    ///         device.transmission_failed(now);
+    ///     }
+    /// }
+    /// # }
+    /// ```
     pub fn transmission_failed(&mut self, now: Instant) {
         if !self.joined() {
             return;
@@ -362,7 +436,9 @@ impl Device {
         self.start_rejoin(now);
     }
 
-    /// Tells the stack a frame reached its parent.
+    /// Tells the stack a frame reached its parent, clearing the run of
+    /// failures that would otherwise start a rejoin. See
+    /// [`Device::transmission_failed`] for the shape a caller writes.
     pub fn transmission_delivered(&mut self) {
         self.consecutive_failures = 0;
     }
@@ -1093,6 +1169,26 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_output_never_carries_the_network_key() {
+        let key = [0xa5u8; KEY_LEN];
+        let credentials = Credentials {
+            pan_id: 0xa269,
+            short_address: 0x4560,
+            parent: 0x0000,
+            channel: 15,
+            key_sequence: 0,
+            key,
+            counter: 7,
+        };
+
+        let rendered = std::format!("{credentials:?}");
+        assert!(rendered.contains("Credentials"));
+        assert!(rendered.contains(&std::format!("{}", 0xa269)));
+        assert!(!rendered.contains("key"));
+        assert!(!rendered.contains(&std::format!("{key:?}")));
+    }
 
     fn rejoining() -> Device {
         let mut device = Device::new(Config::new(0x0011_2233_4455_6677));

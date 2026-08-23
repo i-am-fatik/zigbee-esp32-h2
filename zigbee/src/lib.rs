@@ -1,6 +1,6 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
-#![deny(missing_docs)]
+#![deny(missing_docs, missing_debug_implementations)]
 
 //! A Zigbee end device stack for `no_std` targets, written sans-io.
 //!
@@ -10,30 +10,75 @@
 //! Everything the device needs to say is produced as bytes, so the same crate
 //! runs on any IEEE 802.15.4 radio and in a test with no radio at all.
 //!
+//! The application is fixed: this crate is an On/Off light on one endpoint,
+//! not a framework for building arbitrary Zigbee devices. [`APPLICATION`] is
+//! the whole of what a coordinator will find.
+//!
 //! # Example
+//!
+//! One turn of the loop a caller writes. A real one runs it forever, sending
+//! what [`Device::next_transmission`] produces and feeding back what the radio
+//! heard.
 //!
 //! ```
 //! use zigbee::{Config, Device, Event, Instant};
 //!
-//! let mut device = Device::new(Config::new(0x0011_2233_4455_6677));
-//! let mut elapsed = 0;
+//! let mut device = Device::new(
+//!     Config::new(0x0011_2233_4455_6677)
+//!         .with_manufacturer("esp-rs")
+//!         .with_model("H2.NoStd.Light"),
+//! );
 //!
-//! // A real caller drives this from a radio and a monotonic clock.
-//! device.tick(Instant::from_millis(elapsed));
+//! let now = Instant::from_millis(0);
+//! device.tick(now);
+//!
 //! while let Some(outgoing) = device.next_transmission() {
-//!     let _ = (outgoing.frame, outgoing.request_cca);
+//!     radio_send(outgoing.frame, outgoing.request_cca);
 //! }
-//! elapsed += 10;
 //!
-//! device.receive(&[0x02, 0x00, 0x01], Instant::from_millis(elapsed));
+//! if let Some(frame) = radio_receive() {
+//!     device.receive(frame, now);
+//! }
+//!
 //! while let Some(event) = device.next_event() {
 //!     match event {
-//!         Event::OnOffChanged(on) => assert!(on || !on),
+//!         Event::OnOffChanged(on) => light(on),
+//!         Event::CredentialsChanged(saved) => flash_write(&saved.to_bytes()),
 //!         _ => {}
 //!     }
 //! }
+//! # fn radio_send(_frame: &[u8], _request_cca: bool) {}
+//! # fn radio_receive() -> Option<&'static [u8]> { None }
+//! # fn light(_on: bool) {}
+//! # fn flash_write(_bytes: &[u8]) {}
 //! ```
-
+//!
+//! # What the caller owes
+//!
+//! Drive [`Device::tick`] often enough that a timeout of a few hundred
+//! milliseconds is not missed, and drain [`Device::next_transmission`] and
+//! [`Device::next_event`] every turn. Both queues hold four entries and drop
+//! the oldest when full.
+//!
+//! Retune the radio whenever [`Device::radio`] changes: during a scan the
+//! stack walks the channels itself, and a frame arriving on the wrong channel
+//! or for the wrong PAN never reaches it.
+//!
+//! Persist the bytes from every [`Event::CredentialsChanged`] and hand them to
+//! [`Device::restore`] after a restart. Skipping that costs a fresh join, and
+//! a fresh join needs the coordinator to be permitting one.
+//!
+//! # What the stack promises
+//!
+//! [`Device::receive`] accepts any bytes at all. A frame that is too long,
+//! truncated, mis-framed or hostile is dropped in silence, and no input can
+//! make it panic. Nothing in this crate allocates, blocks, or performs I/O,
+//! and no public type is borrowed from another crate.
+//!
+//! [`Device`] is a state machine with one owner. It is `Send` and `Sync`
+//! because it holds only plain data, but two callers driving one device will
+//! interleave its frames.
+//!
 mod aps;
 mod buf;
 mod crypto;
@@ -82,6 +127,8 @@ pub const CHANNELS: core::ops::RangeInclusive<u8> = 11..=26;
 /// This is the same description the stack puts in its simple descriptor, so a
 /// tool that writes coordinator-side configuration can read it here rather than
 /// guessing from a datasheet.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub struct Application {
     /// The endpoint the application answers on.
     pub endpoint: u8,
