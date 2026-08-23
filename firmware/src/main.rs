@@ -29,6 +29,12 @@ const IDLE_ON_NETWORK: Rgb = Rgb::new(0, 40, 0);
 
 const IDENTIFYING: Rgb = Rgb::new(255, 255, 255);
 
+/// What the upgrade server is told this device is running. Bump the version
+/// when releasing an image, or a server with a newer one will not offer it.
+const MANUFACTURER_CODE: u16 = 0x1037;
+const IMAGE_TYPE: u16 = 0x0001;
+const FIRMWARE_VERSION: u32 = 0x0000_0001;
+
 const BLINK_MS: u32 = 300;
 const IDENTIFY_BLINK_MS: u32 = 120;
 
@@ -63,7 +69,8 @@ fn main() -> ! {
     let config = Config::new(ieee)
         .with_manufacturer("esp-rs")
         .with_model("H2.NoStd.Light")
-        .with_software_build(env!("CARGO_PKG_VERSION"));
+        .with_software_build(env!("CARGO_PKG_VERSION"))
+        .with_firmware(MANUFACTURER_CODE, IMAGE_TYPE, FIRMWARE_VERSION);
 
     let mut store = Store::new(peripherals.FLASH);
     let mut device = match store.load() {
@@ -103,6 +110,22 @@ fn main() -> ! {
 
         device.tick(now());
 
+        #[expect(
+            clippy::while_let_loop,
+            reason = "a while let would hold the borrow across abandon_firmware"
+        )]
+        loop {
+            let refused = match device.next_firmware_block() {
+                Some(block) => !store.write_firmware(block.offset, block.data),
+                None => break,
+            };
+            if refused {
+                println!("ota: the slot refused a block, giving up");
+                device.abandon_firmware();
+                break;
+            }
+        }
+
         let wanted = device.radio();
         if wanted != tuning {
             radio.tune(wanted);
@@ -140,6 +163,21 @@ fn main() -> ! {
                 }
                 Event::LevelChanged(level) => println!("zcl: brightness {}", level),
                 Event::ColourChanged(colour) => println!("zcl: colour {:?}", colour),
+                Event::FirmwareOffered { version, size } => {
+                    println!("ota: image 0x{:08x}, {} octets", version, size);
+                    store.begin_firmware();
+                }
+                Event::FirmwareReady => {
+                    if store.activate_firmware() {
+                        println!("ota: written, restarting into it");
+                        esp_hal::system::software_reset();
+                    }
+                    println!("ota: the new image could not be activated");
+                }
+                Event::FirmwareAbandoned => {
+                    println!("ota: update abandoned, the old image stands");
+                    store.abandon_firmware();
+                }
                 Event::CredentialsChanged(credentials) => {
                     store.save(&credentials);
                 }

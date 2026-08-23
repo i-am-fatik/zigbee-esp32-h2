@@ -1,6 +1,6 @@
 use crate::buf::Writer;
 use crate::crypto::{key_transport_key, KEY_LEN};
-use crate::{aps, mac, nwk, zcl, zdo, Instant, CHANNELS};
+use crate::{aps, mac, nwk, ota, zcl, zdo, Instant, CHANNELS};
 
 /// The link key every Zigbee device is allowed to fall back to when it joins a
 /// centralised network without an install code.
@@ -38,6 +38,7 @@ pub struct Config {
     manufacturer: &'static str,
     model: &'static str,
     software_build: &'static str,
+    firmware: Option<ota::Identity>,
 }
 
 impl Config {
@@ -49,6 +50,7 @@ impl Config {
             manufacturer: "unknown",
             model: "zigbee-rs",
             software_build: "0.1.0",
+            firmware: None,
         }
     }
 
@@ -70,6 +72,26 @@ impl Config {
     /// Sets the software build identifier reported by the Basic cluster.
     pub const fn with_software_build(mut self, software_build: &'static str) -> Self {
         self.software_build = software_build;
+        self
+    }
+
+    /// Says which firmware is running, which is what turns over-the-air
+    /// updating on.
+    ///
+    /// Without this the device serves the upgrade cluster and never asks for an
+    /// image, because a server cannot answer a device that will not say what it
+    /// is already running.
+    pub const fn with_firmware(
+        mut self,
+        manufacturer: u16,
+        image_type: u16,
+        version: u32,
+    ) -> Self {
+        self.firmware = Some(ota::Identity {
+            manufacturer,
+            image_type,
+            version,
+        });
         self
     }
 
@@ -195,6 +217,17 @@ pub struct RadioConfig {
     pub pan_id: u16,
     /// The short address the radio should accept frames for.
     pub short_address: u16,
+}
+
+/// A piece of a new firmware image, to be written down and not acted on until
+/// [`Event::FirmwareReady`] says the whole image arrived.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct FirmwareBlock<'a> {
+    /// Where these bytes belong in the image, counted from its first byte.
+    pub offset: u32,
+    /// The bytes to write.
+    pub data: &'a [u8],
 }
 
 /// A frame the caller should put on the air.
@@ -358,6 +391,19 @@ pub enum Event {
     /// A group was joined or left, or a scene was written or forgotten. Worth
     /// writing to storage, superseding any earlier tables.
     TablesChanged(Tables),
+    /// A server has an image and the download has started. The blocks arrive
+    /// through [`Device::next_firmware_block`].
+    FirmwareOffered {
+        /// The version the image carries.
+        version: u32,
+        /// The size of the whole upgrade file, header included.
+        size: u32,
+    },
+    /// Every byte of the image arrived and the server agreed it may be used.
+    FirmwareReady,
+    /// The download stopped without finishing, so whatever was written down is
+    /// incomplete and must not be booted.
+    FirmwareAbandoned,
 }
 
 enum Phase {
@@ -450,6 +496,8 @@ pub struct Device {
     aps_counter: u8,
     zdo_seq: u8,
     identifying: bool,
+    firmware: ota::State,
+    firmware_block: ota::Block,
     consecutive_failures: u8,
     next_keepalive: Instant,
     outbox: Queue<Outgoing, OUTBOX_CAPACITY>,
@@ -491,6 +539,8 @@ impl Device {
             aps_counter: 0,
             zdo_seq: 0,
             identifying: false,
+            firmware: ota::State::default(),
+            firmware_block: ota::Block::default(),
             consecutive_failures: 0,
             next_keepalive: Instant::from_millis(KEEPALIVE_MS),
             outbox: Queue::new(Outgoing {
@@ -506,6 +556,7 @@ impl Device {
     /// on the next [`Device::tick`] rather than scanning.
     pub fn restore(config: Config, credentials: Credentials) -> Self {
         let mut device = Self::new(config);
+        device.ask_for_firmware(Instant::from_millis(0));
         device.radio = RadioConfig {
             channel: credentials.channel,
             pan_id: credentials.pan_id,
@@ -575,6 +626,35 @@ impl Device {
     /// The state of the On/Off application.
     pub const fn on_off(&self) -> bool {
         self.application.on
+    }
+
+    /// Takes the next piece of a new firmware image, if one arrived.
+    ///
+    /// Write it at its offset and keep going. Nothing is safe to boot until
+    /// [`Event::FirmwareReady`], and an image that stops part way through
+    /// arrives as [`Event::FirmwareAbandoned`] instead.
+    pub fn next_firmware_block(&mut self) -> Option<FirmwareBlock<'_>> {
+        if !self.firmware_block.pending() {
+            return None;
+        }
+        let len = self.firmware_block.len;
+        self.firmware_block.len = 0;
+        Some(FirmwareBlock {
+            offset: self.firmware_block.offset,
+            data: &self.firmware_block.buffer[..len],
+        })
+    }
+
+    /// Gives up on a download, which is what a caller does when it cannot write
+    /// a block down. The server is told, so it stops sending.
+    pub fn abandon_firmware(&mut self) {
+        if !self.firmware.running() {
+            return;
+        }
+        self.send_firmware_request(&ota::Wanted::End(ota::abort()));
+        self.firmware.stop();
+        self.firmware_block.len = 0;
+        self.emit(Event::FirmwareAbandoned);
     }
 
     /// Puts back groups and scenes read from storage.
@@ -704,6 +784,7 @@ impl Device {
 
         if self.joined() {
             self.honour_reporting(now);
+            self.drive_firmware(now);
             if now.reached(self.next_keepalive) {
                 self.next_keepalive = now.plus_millis(KEEPALIVE_MS);
                 let parent = mac::Addr::Short(self.parent);
@@ -1023,6 +1104,42 @@ impl Device {
         }
     }
 
+    fn send_firmware_request(&mut self, wanted: &ota::Wanted) {
+        let mut payload = [0u8; 32];
+        let seq = self.next_zdo_seq();
+        let mut out = Writer::new(&mut payload);
+        let Some(identity) = self.config.firmware else {
+            return;
+        };
+        self.firmware.build(&mut out, seq, wanted, &identity);
+        let Some(body) = out.written() else {
+            return;
+        };
+        let server = self.firmware.server();
+        self.send_aps_data(
+            server,
+            zdo::ENDPOINT,
+            zdo::ENDPOINT,
+            ota::CLUSTER,
+            aps::PROFILE_HOME_AUTOMATION,
+            body,
+        );
+    }
+
+    fn ask_for_firmware(&mut self, now: Instant) {
+        if self.config.firmware.is_some() {
+            self.firmware.ask(now);
+        }
+    }
+
+    fn drive_firmware(&mut self, now: Instant) {
+        let pending = self.firmware_block.pending();
+        let Some(wanted) = self.firmware.due(now, pending) else {
+            return;
+        };
+        self.send_firmware_request(&wanted);
+    }
+
     fn report_on_off(&mut self) {
         let mut payload = [0u8; 16];
         let seq = self.next_zdo_seq();
@@ -1146,6 +1263,7 @@ impl Device {
         self.remember();
         self.announce();
         let short_address = self.radio.short_address;
+        self.ask_for_firmware(now);
         self.emit(Event::Joined { short_address });
     }
 
@@ -1280,7 +1398,7 @@ impl Device {
                 let Some(body) = frame.get(body_range) else {
                     return;
                 };
-                self.on_transport_key(body);
+                self.on_transport_key(body, now);
             }
             aps::Frame::Data(data) => {
                 self.on_application_data(source, broadcast, &data, now);
@@ -1288,7 +1406,7 @@ impl Device {
         }
     }
 
-    fn on_transport_key(&mut self, body: &[u8]) {
+    fn on_transport_key(&mut self, body: &[u8], now: Instant) {
         let Some(transport) = aps::parse_transport_key(body) else {
             return;
         };
@@ -1305,13 +1423,14 @@ impl Device {
         self.remember();
         self.announce();
         let short_address = self.radio.short_address;
+        self.ask_for_firmware(now);
         self.emit(Event::Joined { short_address });
     }
 
     fn on_application_data(&mut self, source: u16, broadcast: bool, request: &aps::Data, now: Instant) {
         if let Some(group) = request.group {
             if self.application.in_group(group) {
-                self.on_cluster_request(None, request, now);
+                self.on_cluster_request(source, false, request, now);
             }
             return;
         }
@@ -1348,7 +1467,10 @@ impl Device {
                 );
             }
             aps::PROFILE_HOME_AUTOMATION if !broadcast => {
-                self.on_cluster_request(Some(source), request, now);
+                self.on_cluster_request(source, true, request, now);
+            }
+            aps::PROFILE_HOME_AUTOMATION if request.cluster == ota::CLUSTER => {
+                self.on_cluster_request(source, false, request, now);
             }
             _ => {}
         }
@@ -1356,7 +1478,18 @@ impl Device {
 
     /// Runs one cluster command. A group frame reaches every member at once, so
     /// nobody answers it and `answer` is `None`.
-    fn on_cluster_request(&mut self, answer: Option<u16>, request: &aps::Data, now: Instant) {
+    fn on_cluster_request(
+        &mut self,
+        source: u16,
+        answer: bool,
+        request: &aps::Data,
+        now: Instant,
+    ) {
+        if request.cluster == ota::CLUSTER {
+            self.on_firmware_frame(source, request.payload, now);
+            return;
+        }
+
         let mut reply = [0u8; 96];
         let mut out = Writer::new(&mut reply);
         let identity = zcl::Identity {
@@ -1373,7 +1506,7 @@ impl Device {
             now,
         );
 
-        if let (Some(source), true, Some(body)) = (answer, outcome.has_reply, out.written()) {
+        if let (true, true, Some(body)) = (answer, outcome.has_reply, out.written()) {
             self.send_aps_data(
                 source,
                 request.src_endpoint,
@@ -1384,6 +1517,23 @@ impl Device {
             );
         }
         self.publish_change(outcome.changed);
+    }
+
+    fn on_firmware_frame(&mut self, source: u16, payload: &[u8], now: Instant) {
+        let Some(incoming) = zcl::parse(payload) else {
+            return;
+        };
+        match self
+            .firmware
+            .receive(source, &incoming, &mut self.firmware_block, now)
+        {
+            ota::Outcome::Nothing => {}
+            ota::Outcome::Offered { version, size } => {
+                self.emit(Event::FirmwareOffered { version, size })
+            }
+            ota::Outcome::Ready => self.emit(Event::FirmwareReady),
+            ota::Outcome::Abandoned => self.emit(Event::FirmwareAbandoned),
+        }
     }
 }
 

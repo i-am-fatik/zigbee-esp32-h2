@@ -42,17 +42,24 @@ coordinator will find.
 | On/Off | on, off, toggle, and hear about every change |
 | Level Control | set the brightness, step it, or ramp it until told to stop |
 | Colour Control | a hue and a saturation, or a colour temperature in mireds |
+| Upgrade (client) | asks a server for a newer image and hands it over a block at a time |
 
 ## What it does not do
 
-No routing, no coordinator role, no sleepy end device, no install codes, no
-green power, no over-the-air updates. Colour is hue
+No routing, no coordinator role, no sleepy end device, no install codes and no
+green power. Colour is hue
 and saturation or a temperature, never the XY space and never an enhanced hue,
 which the capabilities attribute says out loud so a bridge converts on its own
 side. A stated transition time is parsed and ignored, so a colour or a
 brightness the coordinator asks for arrives at once rather than fading in. A
 ramp started by Move does take time, and it advances on `tick` like everything
 else in the stack. Frames it does not understand are dropped in silence.
+
+An upgrade is downloaded but never applied here: the stack strips the file
+header, hands out the firmware a block at a time, and says when the last one
+arrived. Writing it down and booting into it belongs to the caller, because a
+stack that owns no storage cannot own a bootloader either. A device that has
+not been told which firmware it runs never asks for one.
 
 The group and scene tables hold four groups and eight scenes. Every change to
 either offers a `TablesChanged` event carrying the bytes to write down, and

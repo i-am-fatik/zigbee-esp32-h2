@@ -92,10 +92,13 @@ mod crypto;
 mod device;
 mod mac;
 mod nwk;
+mod ota;
 mod zcl;
 mod zdo;
 
-pub use device::{Colour, Config, Credentials, Device, Event, RadioConfig, Tables, Transmission};
+pub use device::{
+    Colour, Config, Credentials, Device, Event, FirmwareBlock, RadioConfig, Tables, Transmission,
+};
 
 /// A point on a monotonic millisecond clock.
 ///
@@ -145,6 +148,8 @@ pub struct Application {
     pub device_id: u16,
     /// The clusters the device serves on that endpoint.
     pub clusters: &'static [u16],
+    /// The clusters the device is a client of rather than a server for.
+    pub outputs: &'static [u16],
 }
 
 /// The colour light this crate ships.
@@ -153,6 +158,7 @@ pub const APPLICATION: Application = Application {
     profile: aps::PROFILE_HOME_AUTOMATION,
     device_id: zdo::DEVICE_ID_COLOUR_LIGHT,
     clusters: &zdo::INPUT_CLUSTERS,
+    outputs: &zdo::OUTPUT_CLUSTERS,
 };
 
 /// The brightest [`Device::set_level`] and the Level Control cluster go. 0xff
@@ -185,3 +191,5 @@ pub const CLUSTER_ON_OFF: u16 = zdo::CLUSTER_ON_OFF;
 pub const CLUSTER_LEVEL_CONTROL: u16 = zdo::CLUSTER_LEVEL_CONTROL;
 /// The Colour Control cluster.
 pub const CLUSTER_COLOUR_CONTROL: u16 = zdo::CLUSTER_COLOUR_CONTROL;
+/// The Over-the-Air Upgrade cluster, which the light is a client of.
+pub const CLUSTER_OTA: u16 = ota::CLUSTER;

@@ -11,8 +11,15 @@ Two crates. [`zigbee/`](zigbee) is the protocol stack, sans-io and portable.
 ```sh
 cargo build --release
 espflash flash --chip esp32h2 --port /dev/cu.usbmodem101 \
+    --partition-table firmware/partitions.csv \
     target/riscv32imac-unknown-none-elf/release/zigbee-h2 --monitor
 ```
+
+The partition table is not the default one. It carries two application slots so
+an image arriving over the air is written to the slot that is not running, and
+booted only once every byte of it landed. Passing it is required on every flash,
+because a device flashed with the default single-slot table cannot update over
+the air at all.
 
 The device scans channels 11 to 26, joins the first Zigbee PRO network that
 accepts it, and answers the coordinator as a colour light. Credentials go to
@@ -56,6 +63,7 @@ where the example is compiled and run as a doc test. A real one is
 | Network | headers, auxiliary security, frame counters, extended nonces |
 | Application support | data, command and ack frames, group addressing, APS security, transport key |
 | Device object | announce, descriptors, endpoints, address requests, bind |
+| Upgrade | queries a server, downloads an image, hands it over for writing |
 | Clusters | Basic, Identify, On/Off, Level Control, Colour Control, including attribute reporting |
 | Groups and scenes | group addressing on receive, four groups and eight scenes, kept in flash |
 
@@ -103,6 +111,17 @@ string the device does not report is a file that silently never matches.
 
 Anything served but unmapped is reported on stderr. Nothing is claimed about
 whether an extend works, which is still settled by exercising it.
+
+## Updating over the air
+
+Bump `FIRMWARE_VERSION` in `firmware/src/main.rs`, build, and wrap the binary in
+a Zigbee upgrade file for the coordinator to serve. The device asks on every
+join and whenever a server sends an Image Notify, downloads at 48 octets a
+block, and restarts into the new slot only after the server agrees the image is
+complete.
+
+An update that is interrupted leaves the running slot untouched, because the
+bootloader is only pointed at the new one after the last block.
 
 ## To forget a network
 

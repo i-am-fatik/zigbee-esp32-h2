@@ -101,12 +101,17 @@ pub fn transmissions(device: &mut Device) -> Vec<Vec<u8>> {
 /// will actually put its replies on the air.
 pub fn joined_device() -> Device {
     let mut device = device();
+    join(&mut device);
+    device
+}
+
+/// Puts a device through a real join, whatever configuration it was built with.
+pub fn join(device: &mut Device) {
     device.tick(at(0));
     device.receive(&beacon(true), at(10));
     device.receive(ASSOCIATION_RESPONSE, at(20));
     device.receive(&deliver(TRANSPORT_KEY), at(30));
-    drain(&mut device);
-    device
+    drain(device);
 }
 
 /// One cluster-specific command sent to a group rather than to this device,

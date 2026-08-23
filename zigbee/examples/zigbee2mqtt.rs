@@ -16,7 +16,8 @@ use std::collections::BTreeSet;
 
 use zigbee::{
     APPLICATION, CLUSTER_BASIC, CLUSTER_COLOUR_CONTROL, CLUSTER_GROUPS, CLUSTER_IDENTIFY,
-    CLUSTER_LEVEL_CONTROL, CLUSTER_ON_OFF, CLUSTER_SCENES, COLOUR_TEMPERATURE_MIREDS,
+    CLUSTER_LEVEL_CONTROL, CLUSTER_ON_OFF, CLUSTER_OTA, CLUSTER_SCENES,
+    COLOUR_TEMPERATURE_MIREDS,
 };
 
 struct Extend {
@@ -129,6 +130,11 @@ fn main() {
             None if needs_no_extend_of_its_own(cluster) => {}
             None => unmapped.push(cluster),
         }
+    }
+
+    if APPLICATION.outputs.contains(&CLUSTER_OTA) {
+        imports.insert("ota");
+        calls.push("ota()".to_string());
     }
 
     let imports: Vec<_> = imports.into_iter().collect();

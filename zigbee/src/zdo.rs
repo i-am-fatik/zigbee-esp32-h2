@@ -40,6 +40,10 @@ pub(crate) const INPUT_CLUSTERS: [u16; 7] = [
     CLUSTER_COLOUR_CONTROL,
 ];
 
+/// The upgrade cluster sits the other way round: the light is the client and
+/// the coordinator serves the images, so it is listed as an output.
+pub(crate) const OUTPUT_CLUSTERS: [u16; 1] = [super::ota::CLUSTER];
+
 pub fn device_announce(out: &mut Writer, seq: u8, short: u16, ieee: u64, capability: u8) {
     out.u8(seq);
     out.u16(short);
@@ -74,7 +78,10 @@ fn simple_descriptor(out: &mut Writer) {
     for cluster in INPUT_CLUSTERS {
         out.u16(cluster);
     }
-    out.u8(0);
+    out.u8(OUTPUT_CLUSTERS.len() as u8);
+    for cluster in OUTPUT_CLUSTERS {
+        out.u16(cluster);
+    }
 }
 
 pub struct Response {
