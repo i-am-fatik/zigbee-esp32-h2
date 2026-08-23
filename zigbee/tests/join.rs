@@ -79,7 +79,10 @@ fn scanning_broadcasts_a_beacon_request() {
 
     let frames = drain(&mut device);
     assert_eq!(frames.len(), 1);
-    assert_eq!(frames[0], vec![0x03, 0x08, 0x01, 0xff, 0xff, 0xff, 0xff, 0x07]);
+    assert_eq!(
+        frames[0],
+        vec![0x03, 0x08, 0x01, 0xff, 0xff, 0xff, 0xff, 0x07]
+    );
 }
 
 #[test]
@@ -113,7 +116,11 @@ fn a_beacon_that_permits_joining_provokes_an_association_request() {
     let request = &frames[0];
     assert_eq!(&request[..2], &[0x23, 0xc8], "MAC command, ack requested");
     assert_eq!(request[request.len() - 2], 0x01, "association request");
-    assert_eq!(request[request.len() - 1], 0x8c, "mains powered, receiver on");
+    assert_eq!(
+        request[request.len() - 1],
+        0x8c,
+        "mains powered, receiver on"
+    );
 }
 
 #[test]
@@ -155,7 +162,10 @@ fn a_real_transport_key_completes_the_join() {
 
     device.receive(&deliver_unsecured(TRANSPORT_KEY), Instant::from_millis(30));
 
-    assert!(device.joined(), "the transported key should decrypt and be accepted");
+    assert!(
+        device.joined(),
+        "the transported key should decrypt and be accepted"
+    );
     let events = events(&mut device);
     assert!(events.iter().any(
         |event| matches!(event, Event::Joined { short_address } if *short_address == OUR_SHORT)
@@ -222,7 +232,10 @@ fn a_few_refused_frames_send_the_device_looking_for_a_new_parent() {
         device.transmission_failed(Instant::from_millis(1_000 + tick));
     }
 
-    assert!(!device.joined(), "three refusals mean the parent stopped listening");
+    assert!(
+        !device.joined(),
+        "three refusals mean the parent stopped listening"
+    );
     device.tick(Instant::from_millis(1_100));
     let frames = drain(&mut device);
     assert_eq!(frames.len(), 1);

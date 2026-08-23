@@ -1,4 +1,8 @@
 use crate::buf::{Reader, Writer};
+use crate::zdo::{
+    CLUSTER_BASIC, CLUSTER_COLOUR_CONTROL, CLUSTER_GROUPS, CLUSTER_IDENTIFY, CLUSTER_LEVEL_CONTROL,
+    CLUSTER_ON_OFF, CLUSTER_SCENES,
+};
 use crate::Instant;
 
 pub const CMD_READ_ATTRIBUTES: u8 = 0x00;
@@ -15,23 +19,7 @@ pub const CMD_DISCOVER_ATTRIBUTES_RESPONSE: u8 = 0x0d;
 pub const IDENTIFY: u8 = 0x00;
 pub const IDENTIFY_QUERY: u8 = 0x01;
 pub const IDENTIFY_QUERY_RESPONSE: u8 = 0x00;
-
 pub const ATTR_IDENTIFY_TIME: u16 = 0x0000;
-
-pub const ON_OFF_OFF: u8 = 0x00;
-pub const ON_OFF_ON: u8 = 0x01;
-pub const ON_OFF_TOGGLE: u8 = 0x02;
-
-pub const ATTR_ON_OFF: u16 = 0x0000;
-
-pub const LEVEL_MOVE_TO_LEVEL: u8 = 0x00;
-pub const LEVEL_MOVE: u8 = 0x01;
-pub const LEVEL_STEP: u8 = 0x02;
-pub const LEVEL_STOP: u8 = 0x03;
-pub const LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF: u8 = 0x04;
-pub const LEVEL_MOVE_WITH_ON_OFF: u8 = 0x05;
-pub const LEVEL_STEP_WITH_ON_OFF: u8 = 0x06;
-pub const LEVEL_STOP_WITH_ON_OFF: u8 = 0x07;
 
 pub const GROUP_ADD: u8 = 0x00;
 pub const GROUP_VIEW: u8 = 0x01;
@@ -39,6 +27,11 @@ pub const GROUP_GET_MEMBERSHIP: u8 = 0x02;
 pub const GROUP_REMOVE: u8 = 0x03;
 pub const GROUP_REMOVE_ALL: u8 = 0x04;
 pub const GROUP_ADD_IF_IDENTIFYING: u8 = 0x05;
+pub const ATTR_GROUP_NAME_SUPPORT: u16 = 0x0000;
+
+/// Group zero addresses nobody, which makes it the empty slot in the table and
+/// the way a scene says it belongs to no group at all.
+const NO_GROUP: u16 = 0x0000;
 
 pub const SCENE_ADD: u8 = 0x00;
 pub const SCENE_VIEW: u8 = 0x01;
@@ -47,8 +40,6 @@ pub const SCENE_REMOVE_ALL: u8 = 0x03;
 pub const SCENE_STORE: u8 = 0x04;
 pub const SCENE_RECALL: u8 = 0x05;
 pub const SCENE_GET_MEMBERSHIP: u8 = 0x06;
-
-pub const ATTR_NAME_SUPPORT: u16 = 0x0000;
 pub const ATTR_SCENE_COUNT: u16 = 0x0000;
 pub const ATTR_CURRENT_SCENE: u16 = 0x0001;
 pub const ATTR_CURRENT_GROUP: u16 = 0x0002;
@@ -60,9 +51,31 @@ pub const ATTR_SCENE_NAME_SUPPORT: u16 = 0x0004;
 pub const MAX_GROUPS: usize = 4;
 pub const MAX_SCENES: usize = 8;
 
-/// Group zero addresses nobody, which makes it the empty slot in the table and
-/// the way a scene says it belongs to no group at all.
-const NO_GROUP: u16 = 0x0000;
+pub const ON_OFF_OFF: u8 = 0x00;
+pub const ON_OFF_ON: u8 = 0x01;
+pub const ON_OFF_TOGGLE: u8 = 0x02;
+pub const ATTR_ON_OFF: u16 = 0x0000;
+
+pub const LEVEL_MOVE_TO_LEVEL: u8 = 0x00;
+pub const LEVEL_MOVE: u8 = 0x01;
+pub const LEVEL_STEP: u8 = 0x02;
+pub const LEVEL_STOP: u8 = 0x03;
+pub const LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF: u8 = 0x04;
+pub const LEVEL_MOVE_WITH_ON_OFF: u8 = 0x05;
+pub const LEVEL_STEP_WITH_ON_OFF: u8 = 0x06;
+pub const LEVEL_STOP_WITH_ON_OFF: u8 = 0x07;
+pub const ATTR_CURRENT_LEVEL: u16 = 0x0000;
+
+const LEVEL_UP: u8 = 0x00;
+const LEVEL_DOWN: u8 = 0x01;
+
+/// The brightest a Level Control light goes. 0xff is reserved for "undefined",
+/// so the usable range stops one short of it.
+pub const MAX_LEVEL: u8 = 0xfe;
+
+/// The rate a coordinator sends when it wants the light to move as fast as it
+/// can rather than at a stated number of units per second.
+const RATE_UNSTATED: u8 = 0xff;
 
 pub const COLOUR_MOVE_TO_HUE: u8 = 0x00;
 pub const COLOUR_STEP_HUE: u8 = 0x02;
@@ -71,7 +84,6 @@ pub const COLOUR_STEP_SATURATION: u8 = 0x05;
 pub const COLOUR_MOVE_TO_HUE_AND_SATURATION: u8 = 0x06;
 pub const COLOUR_MOVE_TO_TEMPERATURE: u8 = 0x0a;
 pub const COLOUR_STOP: u8 = 0x47;
-
 pub const ATTR_CURRENT_HUE: u16 = 0x0000;
 pub const ATTR_CURRENT_SATURATION: u16 = 0x0001;
 pub const ATTR_COLOUR_TEMPERATURE: u16 = 0x0007;
@@ -84,8 +96,15 @@ pub const ATTR_TEMPERATURE_MAX_MIREDS: u16 = 0x400c;
 pub const COLOUR_MODE_HUE_SATURATION: u8 = 0x00;
 pub const COLOUR_MODE_TEMPERATURE: u8 = 0x02;
 
+const COLOUR_UP: u8 = 0x01;
+const COLOUR_DOWN: u8 = 0x03;
+
 pub const MAX_HUE: u8 = 0xfe;
 pub const MAX_SATURATION: u8 = 0xfe;
+
+/// The full circle hue travels around, which is one more than the brightest
+/// hue because the range starts at zero.
+const HUE_STEPS: u16 = MAX_HUE as u16 + 1;
 
 /// A mired is a million over the colour temperature in kelvin, so the smaller
 /// number is the cooler light. This range is roughly 6500 K down to 2000 K.
@@ -96,41 +115,21 @@ pub const WARMEST_MIREDS: u16 = 500;
 /// enhanced hue, so a bridge that wants those converts on its own side.
 const COLOUR_CAPABILITIES: u16 = 0x0011;
 
-/// The full circle hue travels around, which is one more than the brightest
-/// hue because the range starts at zero.
-const HUE_STEPS: u16 = MAX_HUE as u16 + 1;
-
-const STEP_UP: u8 = 0x01;
-const STEP_DOWN: u8 = 0x03;
-
-const DIRECTION_UP: u8 = 0x00;
-const DIRECTION_DOWN: u8 = 0x01;
-
-/// The rate a coordinator sends when it wants the light to move as fast as it
-/// can rather than at a stated number of units per second.
-const RATE_UNSTATED: u8 = 0xff;
-
-pub const ATTR_CURRENT_LEVEL: u16 = 0x0000;
-
-/// The brightest a Level Control light goes. 0xff is reserved for "undefined",
-/// so the usable range stops one short of it.
-pub const MAX_LEVEL: u8 = 0xfe;
-
 const TYPE_BOOL: u8 = 0x10;
+const TYPE_BITMAP8: u8 = 0x18;
+const TYPE_BITMAP16: u8 = 0x19;
 const TYPE_UINT8: u8 = 0x20;
 const TYPE_UINT16: u8 = 0x21;
 const TYPE_ENUM8: u8 = 0x30;
-const TYPE_BITMAP8: u8 = 0x18;
-const TYPE_BITMAP16: u8 = 0x19;
 const TYPE_STRING: u8 = 0x42;
 
 const STATUS_SUCCESS: u8 = 0x00;
-const STATUS_UNSUPPORTED_ATTRIBUTE: u8 = 0x86;
+const STATUS_UNSUP_CLUSTER_COMMAND: u8 = 0x81;
 const STATUS_INVALID_FIELD: u8 = 0x85;
+const STATUS_UNSUPPORTED_ATTRIBUTE: u8 = 0x86;
 const STATUS_INSUFFICIENT_SPACE: u8 = 0x89;
 const STATUS_DUPLICATE_EXISTS: u8 = 0x8a;
 const STATUS_NOT_FOUND: u8 = 0x8b;
-const STATUS_UNSUP_CLUSTER_COMMAND: u8 = 0x81;
 
 const DIRECTION_REPORT: u8 = 0x00;
 
@@ -202,69 +201,68 @@ fn write_attribute(
     now: Instant,
 ) -> bool {
     match (cluster, attribute) {
-        (super::zdo::CLUSTER_BASIC, 0x0000) => {
+        (CLUSTER_BASIC, 0x0000) => {
             out.u8(TYPE_UINT8).u8(3);
         }
-        (super::zdo::CLUSTER_BASIC, 0x0001) => {
+        (CLUSTER_BASIC, 0x0001) => {
             out.u8(TYPE_UINT8).u8(1);
         }
-        (super::zdo::CLUSTER_BASIC, 0x0002) => {
+        (CLUSTER_BASIC, 0x0002) => {
             out.u8(TYPE_UINT8).u8(2);
         }
-        (super::zdo::CLUSTER_BASIC, 0x0003) => {
+        (CLUSTER_BASIC, 0x0003) => {
             out.u8(TYPE_UINT8).u8(1);
         }
-        (super::zdo::CLUSTER_BASIC, 0x0004) => string(out, identity.manufacturer),
-        (super::zdo::CLUSTER_BASIC, 0x0005) => string(out, identity.model),
-        (super::zdo::CLUSTER_BASIC, 0x0007) => {
+        (CLUSTER_BASIC, 0x0004) => string(out, identity.manufacturer),
+        (CLUSTER_BASIC, 0x0005) => string(out, identity.model),
+        (CLUSTER_BASIC, 0x0007) => {
             out.u8(TYPE_ENUM8).u8(0x01);
         }
-        (super::zdo::CLUSTER_BASIC, 0x4000) => string(out, identity.software_build),
-        (super::zdo::CLUSTER_IDENTIFY, ATTR_IDENTIFY_TIME) => {
+        (CLUSTER_BASIC, 0x4000) => string(out, identity.software_build),
+        (CLUSTER_IDENTIFY, ATTR_IDENTIFY_TIME) => {
             out.u8(TYPE_UINT16).u16(state.identify_remaining(now));
         }
-        (super::zdo::CLUSTER_GROUPS, ATTR_NAME_SUPPORT)
-        | (super::zdo::CLUSTER_SCENES, ATTR_SCENE_NAME_SUPPORT) => {
+        (CLUSTER_GROUPS, ATTR_GROUP_NAME_SUPPORT) | (CLUSTER_SCENES, ATTR_SCENE_NAME_SUPPORT) => {
             out.u8(TYPE_BITMAP8).u8(0x00);
         }
-        (super::zdo::CLUSTER_SCENES, ATTR_SCENE_COUNT) => {
+        (CLUSTER_SCENES, ATTR_SCENE_COUNT) => {
             out.u8(TYPE_UINT8).u8(state.scene_count());
         }
-        (super::zdo::CLUSTER_SCENES, ATTR_CURRENT_SCENE) => {
+        (CLUSTER_SCENES, ATTR_CURRENT_SCENE) => {
             out.u8(TYPE_UINT8).u8(state.current_scene);
         }
-        (super::zdo::CLUSTER_SCENES, ATTR_CURRENT_GROUP) => {
+        (CLUSTER_SCENES, ATTR_CURRENT_GROUP) => {
             out.u8(TYPE_UINT16).u16(state.current_group);
         }
-        (super::zdo::CLUSTER_SCENES, ATTR_SCENE_VALID) => {
+        (CLUSTER_SCENES, ATTR_SCENE_VALID) => {
             out.u8(TYPE_BOOL).u8(state.scene_valid as u8);
         }
-        (super::zdo::CLUSTER_ON_OFF, ATTR_ON_OFF) => {
+        (CLUSTER_ON_OFF, ATTR_ON_OFF) => {
             out.u8(TYPE_BOOL).u8(state.on as u8);
         }
-        (super::zdo::CLUSTER_LEVEL_CONTROL, ATTR_CURRENT_LEVEL) => {
+        (CLUSTER_LEVEL_CONTROL, ATTR_CURRENT_LEVEL) => {
             out.u8(TYPE_UINT8).u8(state.level);
         }
-        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_CURRENT_HUE) => {
+        (CLUSTER_COLOUR_CONTROL, ATTR_CURRENT_HUE) => {
             out.u8(TYPE_UINT8).u8(state.hue);
         }
-        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_CURRENT_SATURATION) => {
+        (CLUSTER_COLOUR_CONTROL, ATTR_CURRENT_SATURATION) => {
             out.u8(TYPE_UINT8).u8(state.saturation);
         }
-        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_TEMPERATURE) => {
+        (CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_TEMPERATURE) => {
             out.u8(TYPE_UINT16).u16(state.mireds);
         }
-        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_MODE)
-        | (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_ENHANCED_COLOUR_MODE) => {
+        (CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_MODE)
+        | (CLUSTER_COLOUR_CONTROL, ATTR_ENHANCED_COLOUR_MODE) => {
             out.u8(TYPE_ENUM8).u8(state.colour_mode);
         }
-        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_CAPABILITIES) => {
+        (CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_CAPABILITIES) => {
             out.u8(TYPE_BITMAP16).u16(COLOUR_CAPABILITIES);
         }
-        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_TEMPERATURE_MIN_MIREDS) => {
+        (CLUSTER_COLOUR_CONTROL, ATTR_TEMPERATURE_MIN_MIREDS) => {
             out.u8(TYPE_UINT16).u16(COOLEST_MIREDS);
         }
-        (super::zdo::CLUSTER_COLOUR_CONTROL, ATTR_TEMPERATURE_MAX_MIREDS) => {
+        (CLUSTER_COLOUR_CONTROL, ATTR_TEMPERATURE_MAX_MIREDS) => {
             out.u8(TYPE_UINT16).u16(WARMEST_MIREDS);
         }
         _ => return false,
@@ -456,7 +454,11 @@ impl State {
     fn start_ramp(&mut self, up: bool, rate: u8, with_on_off: bool, now: Instant) {
         self.ramp = Some(Ramp {
             up,
-            rate: if rate == RATE_UNSTATED { MAX_LEVEL } else { rate },
+            rate: if rate == RATE_UNSTATED {
+                MAX_LEVEL
+            } else {
+                rate
+            },
             with_on_off,
             started_at: now,
             from: self.level,
@@ -724,42 +726,32 @@ pub fn handle(
                     out.set(status_at, STATUS_UNSUPPORTED_ATTRIBUTE);
                 }
             }
-            Outcome {
-                has_reply: true,
-                changed: Changed::NONE,
-            }
+            replied(Changed::NONE)
         }
         CMD_CONFIGURE_REPORTING => {
             header(out, false, request.seq, CMD_CONFIGURE_REPORTING_RESPONSE);
             configure_reporting(out, cluster, request.payload, state);
-            Outcome {
-                has_reply: true,
-                changed: Changed::NONE,
-            }
+            replied(Changed::NONE)
         }
         CMD_WRITE_ATTRIBUTES => {
             header(out, false, request.seq, CMD_WRITE_ATTRIBUTES_RESPONSE);
             write_attributes(out, cluster, request.payload, state, now);
-            Outcome {
-                has_reply: true,
-                changed: Changed::NONE,
-            }
+            replied(Changed::NONE)
         }
         CMD_DISCOVER_ATTRIBUTES => {
             header(out, false, request.seq, CMD_DISCOVER_ATTRIBUTES_RESPONSE);
             out.u8(0x01);
-            Outcome {
-                has_reply: true,
-                changed: Changed::NONE,
-            }
+            replied(Changed::NONE)
         }
         CMD_DEFAULT_RESPONSE => NOTHING,
         _ => {
-            default_response(out, request.seq, request.command, STATUS_UNSUP_CLUSTER_COMMAND);
-            Outcome {
-                has_reply: true,
-                changed: Changed::NONE,
-            }
+            default_response(
+                out,
+                request.seq,
+                request.command,
+                STATUS_UNSUP_CLUSTER_COMMAND,
+            );
+            replied(Changed::NONE)
         }
     }
 }
@@ -788,8 +780,7 @@ fn configure_reporting(out: &mut Writer, cluster: u16, payload: &[u8], state: &m
             r.u16();
             continue;
         }
-        let (Some(data_type), Some(min_interval), Some(max_interval)) =
-            (r.u8(), r.u16(), r.u16())
+        let (Some(data_type), Some(min_interval), Some(max_interval)) = (r.u8(), r.u16(), r.u16())
         else {
             break;
         };
@@ -802,11 +793,11 @@ fn configure_reporting(out: &mut Writer, cluster: u16, payload: &[u8], state: &m
             min_interval,
             max_interval,
         };
-        if cluster == super::zdo::CLUSTER_ON_OFF && attribute == ATTR_ON_OFF {
+        if cluster == CLUSTER_ON_OFF && attribute == ATTR_ON_OFF {
             state.on_off_report.reporting = Some(wanted);
             continue;
         }
-        if cluster == super::zdo::CLUSTER_LEVEL_CONTROL && attribute == ATTR_CURRENT_LEVEL {
+        if cluster == CLUSTER_LEVEL_CONTROL && attribute == ATTR_CURRENT_LEVEL {
             state.level_report.reporting = Some(wanted);
             continue;
         }
@@ -834,8 +825,7 @@ fn write_attributes(
     let mut r = Reader::new(payload);
     while let Some(attribute) = r.u16() {
         let Some(data_type) = r.u8() else { break };
-        let writable =
-            cluster == super::zdo::CLUSTER_IDENTIFY && attribute == ATTR_IDENTIFY_TIME;
+        let writable = cluster == CLUSTER_IDENTIFY && attribute == ATTR_IDENTIFY_TIME;
         if writable && data_type == TYPE_UINT16 {
             let Some(seconds) = r.u16() else { break };
             state.identify_for(seconds, now);
@@ -858,17 +848,17 @@ fn read_extension_fields(payload: &[u8], scene: &mut Scene) {
         };
         let mut f = Reader::new(fields);
         match cluster {
-            super::zdo::CLUSTER_ON_OFF => {
+            CLUSTER_ON_OFF => {
                 if let Some(on) = f.u8() {
                     scene.on = on != 0;
                 }
             }
-            super::zdo::CLUSTER_LEVEL_CONTROL => {
+            CLUSTER_LEVEL_CONTROL => {
                 if let Some(level) = f.u8() {
                     scene.level = level.min(MAX_LEVEL);
                 }
             }
-            super::zdo::CLUSTER_COLOUR_CONTROL => read_colour_fields(&mut f, scene),
+            CLUSTER_COLOUR_CONTROL => read_colour_fields(&mut f, scene),
             _ => {}
         }
     }
@@ -898,11 +888,9 @@ fn read_colour_fields(f: &mut Reader, scene: &mut Scene) {
 }
 
 fn write_extension_fields(out: &mut Writer, scene: &Scene) {
-    out.u16(super::zdo::CLUSTER_ON_OFF).u8(1).u8(scene.on as u8);
-    out.u16(super::zdo::CLUSTER_LEVEL_CONTROL)
-        .u8(1)
-        .u8(scene.level);
-    out.u16(super::zdo::CLUSTER_COLOUR_CONTROL).u8(13);
+    out.u16(CLUSTER_ON_OFF).u8(1).u8(scene.on as u8);
+    out.u16(CLUSTER_LEVEL_CONTROL).u8(1).u8(scene.level);
+    out.u16(CLUSTER_COLOUR_CONTROL).u8(13);
     out.u16(0).u16(0);
     out.u16((scene.hue as u16) << 8).u8(scene.saturation);
     out.u8(0).u8(0).u16(0);
@@ -912,14 +900,12 @@ fn write_extension_fields(out: &mut Writer, scene: &Scene) {
     });
 }
 
-/// Answers a Groups command. `None` means a reply specific to the command was
-/// written, `Some` carries the status a default response should report.
 fn handle_group_command(
     out: &mut Writer,
     request: &Incoming,
     state: &mut State,
     now: Instant,
-) -> (Option<u8>, Changed) {
+) -> Outcome {
     let mut r = Reader::new(request.payload);
     let group = r.u16();
 
@@ -928,13 +914,13 @@ fn handle_group_command(
             let status = state.join_group(group);
             header(out, true, request.seq, GROUP_ADD);
             out.u8(status).u16(group);
-            (None, Changed::TABLES)
+            replied(Changed::TABLES)
         }
         (GROUP_ADD_IF_IDENTIFYING, Some(group)) => {
             if state.identify_remaining(now) > 0 {
                 state.join_group(group);
             }
-            (Some(STATUS_SUCCESS), Changed::TABLES)
+            finish(out, request, STATUS_SUCCESS, Changed::TABLES)
         }
         (GROUP_VIEW, Some(group)) => {
             let status = if state.in_group(group) {
@@ -944,13 +930,13 @@ fn handle_group_command(
             };
             header(out, true, request.seq, GROUP_VIEW);
             out.u8(status).u16(group).u8(0);
-            (None, Changed::NONE)
+            replied(Changed::NONE)
         }
         (GROUP_REMOVE, Some(group)) => {
             let status = state.leave_group(group);
             header(out, true, request.seq, GROUP_REMOVE);
             out.u8(status).u16(group);
-            (None, Changed::TABLES)
+            replied(Changed::TABLES)
         }
         (GROUP_GET_MEMBERSHIP, _) => {
             let mut r = Reader::new(request.payload);
@@ -976,35 +962,30 @@ fn handle_group_command(
                 }
             }
             out.set(count_at, count);
-            (None, Changed::NONE)
+            replied(Changed::NONE)
         }
         (GROUP_REMOVE_ALL, _) => {
             state.leave_every_group();
-            (Some(STATUS_SUCCESS), Changed::TABLES)
+            finish(out, request, STATUS_SUCCESS, Changed::TABLES)
         }
-        (_, None) => (Some(STATUS_INVALID_FIELD), Changed::NONE),
-        _ => (Some(STATUS_UNSUP_CLUSTER_COMMAND), Changed::NONE),
+        (_, None) => malformed(out, request),
+        _ => finish(out, request, STATUS_UNSUP_CLUSTER_COMMAND, Changed::NONE),
     }
 }
 
-/// Answers a Scenes command, with the same `None` means "already replied".
-fn handle_scene_command(
-    out: &mut Writer,
-    request: &Incoming,
-    state: &mut State,
-) -> (Option<u8>, Changed) {
+fn handle_scene_command(out: &mut Writer, request: &Incoming, state: &mut State) -> Outcome {
     let mut r = Reader::new(request.payload);
     let Some(group) = r.u16() else {
-        return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+        return malformed(out, request);
     };
 
     match request.command {
         SCENE_ADD => {
             let (Some(id), Some(_transition), Some(name_len)) = (r.u8(), r.u16(), r.u8()) else {
-                return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+                return malformed(out, request);
             };
             if r.skip(name_len as usize).is_none() {
-                return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+                return malformed(out, request);
             }
             let mut scene = Scene {
                 group,
@@ -1020,11 +1001,11 @@ fn handle_scene_command(
             let status = state.put_scene(scene);
             header(out, true, request.seq, SCENE_ADD);
             out.u8(status).u16(group).u8(id);
-            (None, Changed::TABLES)
+            replied(Changed::TABLES)
         }
         SCENE_VIEW => {
             let Some(id) = r.u8() else {
-                return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+                return malformed(out, request);
             };
             header(out, true, request.seq, SCENE_VIEW);
             match state.find_scene(group, id).and_then(|at| state.scenes[at]) {
@@ -1036,39 +1017,39 @@ fn handle_scene_command(
                     out.u8(STATUS_NOT_FOUND).u16(group).u8(id);
                 }
             }
-            (None, Changed::NONE)
+            replied(Changed::NONE)
         }
         SCENE_REMOVE => {
             let Some(id) = r.u8() else {
-                return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+                return malformed(out, request);
             };
             let status = state.remove_scene(group, id);
             header(out, true, request.seq, SCENE_REMOVE);
             out.u8(status).u16(group).u8(id);
-            (None, Changed::TABLES)
+            replied(Changed::TABLES)
         }
         SCENE_REMOVE_ALL => {
             let status = state.remove_scenes_of(group);
             header(out, true, request.seq, SCENE_REMOVE_ALL);
             out.u8(status).u16(group);
-            (None, Changed::TABLES)
+            replied(Changed::TABLES)
         }
         SCENE_STORE => {
             let Some(id) = r.u8() else {
-                return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+                return malformed(out, request);
             };
             let status = state.store_scene(group, id);
             header(out, true, request.seq, SCENE_STORE);
             out.u8(status).u16(group).u8(id);
-            (None, Changed::TABLES)
+            replied(Changed::TABLES)
         }
         SCENE_RECALL => {
             let Some(id) = r.u8() else {
-                return (Some(STATUS_INVALID_FIELD), Changed::NONE);
+                return malformed(out, request);
             };
             match state.recall_scene(group, id) {
-                Some(changed) => (Some(STATUS_SUCCESS), changed),
-                None => (Some(STATUS_NOT_FOUND), Changed::NONE),
+                Some(changed) => finish(out, request, STATUS_SUCCESS, changed),
+                None => finish(out, request, STATUS_NOT_FOUND, Changed::NONE),
             }
         }
         SCENE_GET_MEMBERSHIP => {
@@ -1088,10 +1069,22 @@ fn handle_scene_command(
                     .u8(state.scene_capacity())
                     .u16(group);
             }
-            (None, Changed::NONE)
+            replied(Changed::NONE)
         }
-        _ => (Some(STATUS_UNSUP_CLUSTER_COMMAND), Changed::NONE),
+        _ => finish(out, request, STATUS_UNSUP_CLUSTER_COMMAND, Changed::NONE),
     }
+}
+
+/// A reply the command wrote for itself, rather than the generic one.
+const fn replied(changed: Changed) -> Outcome {
+    Outcome {
+        has_reply: true,
+        changed,
+    }
+}
+
+fn malformed(out: &mut Writer, request: &Incoming) -> Outcome {
+    finish(out, request, STATUS_INVALID_FIELD, Changed::NONE)
 }
 
 /// Either the default response the specification asks for, or nothing when the
@@ -1104,10 +1097,7 @@ fn finish(out: &mut Writer, request: &Incoming, status: u8, changed: Changed) ->
         };
     }
     default_response(out, request.seq, request.command, status);
-    Outcome {
-        has_reply: true,
-        changed,
-    }
+    replied(changed)
 }
 
 fn handle_cluster_command(
@@ -1117,105 +1107,86 @@ fn handle_cluster_command(
     state: &mut State,
     now: Instant,
 ) -> Outcome {
-    if cluster == super::zdo::CLUSTER_GROUPS {
-        let (status, changed) = handle_group_command(out, request, state, now);
-        return match status {
-            Some(status) => finish(out, request, status, changed),
-            None => Outcome {
-                has_reply: true,
-                changed,
-            },
-        };
-    }
-    if cluster == super::zdo::CLUSTER_SCENES {
-        let (status, changed) = handle_scene_command(out, request, state);
-        return match status {
-            Some(status) => finish(out, request, status, changed),
-            None => Outcome {
-                has_reply: true,
-                changed,
-            },
-        };
+    match cluster {
+        CLUSTER_GROUPS => return handle_group_command(out, request, state, now),
+        CLUSTER_SCENES => return handle_scene_command(out, request, state),
+        _ => {}
     }
 
-    if cluster == super::zdo::CLUSTER_IDENTIFY && request.command == IDENTIFY_QUERY {
+    if cluster == CLUSTER_IDENTIFY && request.command == IDENTIFY_QUERY {
         let remaining = state.identify_remaining(now);
         if remaining == 0 {
             return NOTHING;
         }
         header(out, true, request.seq, IDENTIFY_QUERY_RESPONSE);
         out.u16(remaining);
-        return Outcome {
-            has_reply: true,
-            changed: Changed::NONE,
-        };
+        return replied(Changed::NONE);
     }
 
     let mut changed = Changed::NONE;
 
     let status = match (cluster, request.command) {
-        (super::zdo::CLUSTER_ON_OFF, ON_OFF_OFF) => {
+        (CLUSTER_ON_OFF, ON_OFF_OFF) => {
             changed.on_off = state.on;
             state.on = false;
             STATUS_SUCCESS
         }
-        (super::zdo::CLUSTER_ON_OFF, ON_OFF_ON) => {
+        (CLUSTER_ON_OFF, ON_OFF_ON) => {
             changed.on_off = !state.on;
             state.on = true;
             STATUS_SUCCESS
         }
-        (super::zdo::CLUSTER_ON_OFF, ON_OFF_TOGGLE) => {
+        (CLUSTER_ON_OFF, ON_OFF_TOGGLE) => {
             state.on = !state.on;
             changed.on_off = true;
             STATUS_SUCCESS
         }
-        (
-            super::zdo::CLUSTER_LEVEL_CONTROL,
-            LEVEL_MOVE_TO_LEVEL | LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
-        ) => match Reader::new(request.payload).u8() {
-            Some(level) => {
-                let with_on_off = request.command == LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF;
-                changed = state.move_to_level(level, with_on_off);
-                STATUS_SUCCESS
-            }
-            None => STATUS_INVALID_FIELD,
-        },
-        (super::zdo::CLUSTER_LEVEL_CONTROL, LEVEL_MOVE | LEVEL_MOVE_WITH_ON_OFF) => {
-            let mut r = Reader::new(request.payload);
-            match (r.u8(), r.u8()) {
-                (Some(direction), Some(rate)) if direction <= DIRECTION_DOWN && rate != 0 => {
-                    let with_on_off = request.command == LEVEL_MOVE_WITH_ON_OFF;
-                    state.start_ramp(direction == DIRECTION_UP, rate, with_on_off, now);
-                    STATUS_SUCCESS
-                }
-                _ => STATUS_INVALID_FIELD,
-            }
-        }
-        (super::zdo::CLUSTER_LEVEL_CONTROL, LEVEL_STEP | LEVEL_STEP_WITH_ON_OFF) => {
-            let mut r = Reader::new(request.payload);
-            match (r.u8(), r.u8()) {
-                (Some(direction), Some(size)) if direction <= DIRECTION_DOWN => {
-                    let with_on_off = request.command == LEVEL_STEP_WITH_ON_OFF;
-                    changed = state.step(direction == DIRECTION_UP, size, with_on_off);
-                    STATUS_SUCCESS
-                }
-                _ => STATUS_INVALID_FIELD,
-            }
-        }
-        (super::zdo::CLUSTER_LEVEL_CONTROL, LEVEL_STOP | LEVEL_STOP_WITH_ON_OFF) => {
-            state.stop();
-            STATUS_SUCCESS
-        }
-        (super::zdo::CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_TO_HUE) => {
+        (CLUSTER_LEVEL_CONTROL, LEVEL_MOVE_TO_LEVEL | LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF) => {
             match Reader::new(request.payload).u8() {
-                Some(hue) => {
-                    changed = state.set_hue_and_saturation(hue, state.saturation);
+                Some(level) => {
+                    let with_on_off = request.command == LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF;
+                    changed = state.move_to_level(level, with_on_off);
                     STATUS_SUCCESS
                 }
                 None => STATUS_INVALID_FIELD,
             }
         }
-        (super::zdo::CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_TO_SATURATION) => {
+        (CLUSTER_LEVEL_CONTROL, LEVEL_MOVE | LEVEL_MOVE_WITH_ON_OFF) => {
+            let mut r = Reader::new(request.payload);
+            match (r.u8(), r.u8()) {
+                (Some(direction), Some(rate))
+                    if matches!(direction, LEVEL_UP | LEVEL_DOWN) && rate != 0 =>
+                {
+                    let with_on_off = request.command == LEVEL_MOVE_WITH_ON_OFF;
+                    state.start_ramp(direction == LEVEL_UP, rate, with_on_off, now);
+                    STATUS_SUCCESS
+                }
+                _ => STATUS_INVALID_FIELD,
+            }
+        }
+        (CLUSTER_LEVEL_CONTROL, LEVEL_STEP | LEVEL_STEP_WITH_ON_OFF) => {
+            let mut r = Reader::new(request.payload);
+            match (r.u8(), r.u8()) {
+                (Some(direction), Some(size)) if matches!(direction, LEVEL_UP | LEVEL_DOWN) => {
+                    let with_on_off = request.command == LEVEL_STEP_WITH_ON_OFF;
+                    changed = state.step(direction == LEVEL_UP, size, with_on_off);
+                    STATUS_SUCCESS
+                }
+                _ => STATUS_INVALID_FIELD,
+            }
+        }
+        (CLUSTER_LEVEL_CONTROL, LEVEL_STOP | LEVEL_STOP_WITH_ON_OFF) => {
+            state.stop();
+            STATUS_SUCCESS
+        }
+        (CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_TO_HUE) => match Reader::new(request.payload).u8() {
+            Some(hue) => {
+                changed = state.set_hue_and_saturation(hue, state.saturation);
+                STATUS_SUCCESS
+            }
+            None => STATUS_INVALID_FIELD,
+        },
+        (CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_TO_SATURATION) => {
             match Reader::new(request.payload).u8() {
                 Some(saturation) => {
                     changed = state.set_hue_and_saturation(state.hue, saturation);
@@ -1224,7 +1195,7 @@ fn handle_cluster_command(
                 None => STATUS_INVALID_FIELD,
             }
         }
-        (super::zdo::CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_TO_HUE_AND_SATURATION) => {
+        (CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_TO_HUE_AND_SATURATION) => {
             let mut r = Reader::new(request.payload);
             match (r.u8(), r.u8()) {
                 (Some(hue), Some(saturation)) => {
@@ -1234,7 +1205,7 @@ fn handle_cluster_command(
                 _ => STATUS_INVALID_FIELD,
             }
         }
-        (super::zdo::CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_TO_TEMPERATURE) => {
+        (CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_TO_TEMPERATURE) => {
             match Reader::new(request.payload).u16() {
                 Some(mireds) => {
                     changed = state.set_mireds(mireds);
@@ -1243,11 +1214,11 @@ fn handle_cluster_command(
                 None => STATUS_INVALID_FIELD,
             }
         }
-        (super::zdo::CLUSTER_COLOUR_CONTROL, COLOUR_STEP_HUE | COLOUR_STEP_SATURATION) => {
+        (CLUSTER_COLOUR_CONTROL, COLOUR_STEP_HUE | COLOUR_STEP_SATURATION) => {
             let mut r = Reader::new(request.payload);
             match (r.u8(), r.u8()) {
-                (Some(mode), Some(size)) if mode == STEP_UP || mode == STEP_DOWN => {
-                    let up = mode == STEP_UP;
+                (Some(mode), Some(size)) if matches!(mode, COLOUR_UP | COLOUR_DOWN) => {
+                    let up = mode == COLOUR_UP;
                     changed = if request.command == COLOUR_STEP_HUE {
                         state.step_hue(up, size)
                     } else {
@@ -1258,8 +1229,8 @@ fn handle_cluster_command(
                 _ => STATUS_INVALID_FIELD,
             }
         }
-        (super::zdo::CLUSTER_COLOUR_CONTROL, COLOUR_STOP) => STATUS_SUCCESS,
-        (super::zdo::CLUSTER_IDENTIFY, IDENTIFY) => {
+        (CLUSTER_COLOUR_CONTROL, COLOUR_STOP) => STATUS_SUCCESS,
+        (CLUSTER_IDENTIFY, IDENTIFY) => {
             let seconds = Reader::new(request.payload).u16().unwrap_or(0);
             state.identify_for(seconds, now);
             STATUS_SUCCESS
@@ -1294,8 +1265,6 @@ pub fn report_level(out: &mut Writer, seq: u8, level: u8) {
 mod tests {
     use super::*;
 
-    const IDENTIFY_CLUSTER: u16 = super::super::zdo::CLUSTER_IDENTIFY;
-
     fn identity() -> Identity<'static> {
         Identity {
             manufacturer: "esp-rs",
@@ -1328,7 +1297,7 @@ mod tests {
     #[test]
     fn identify_command_starts_a_countdown() {
         let mut state = State::default();
-        run(IDENTIFY_CLUSTER, &identify_command(10), &mut state, 0);
+        run(CLUSTER_IDENTIFY, &identify_command(10), &mut state, 0);
 
         assert_eq!(state.identify_remaining(Instant::from_millis(0)), 10);
         assert_eq!(state.identify_remaining(Instant::from_millis(4_000)), 6);
@@ -1339,8 +1308,8 @@ mod tests {
     #[test]
     fn identify_with_zero_seconds_stops_identifying() {
         let mut state = State::default();
-        run(IDENTIFY_CLUSTER, &identify_command(10), &mut state, 0);
-        run(IDENTIFY_CLUSTER, &identify_command(0), &mut state, 1_000);
+        run(CLUSTER_IDENTIFY, &identify_command(10), &mut state, 0);
+        run(CLUSTER_IDENTIFY, &identify_command(0), &mut state, 1_000);
 
         assert_eq!(state.identify_remaining(Instant::from_millis(1_000)), 0);
     }
@@ -1348,10 +1317,10 @@ mod tests {
     #[test]
     fn a_query_while_identifying_answers_with_the_remaining_time() {
         let mut state = State::default();
-        run(IDENTIFY_CLUSTER, &identify_command(30), &mut state, 0);
+        run(CLUSTER_IDENTIFY, &identify_command(30), &mut state, 0);
 
         let query = vec![0x01, 0x43, IDENTIFY_QUERY];
-        let (outcome, reply) = run(IDENTIFY_CLUSTER, &query, &mut state, 5_000);
+        let (outcome, reply) = run(CLUSTER_IDENTIFY, &query, &mut state, 5_000);
 
         assert!(outcome.has_reply);
         assert_eq!(reply[2], IDENTIFY_QUERY_RESPONSE);
@@ -1362,9 +1331,12 @@ mod tests {
     fn a_query_while_idle_stays_silent() {
         let mut state = State::default();
         let query = vec![0x01, 0x43, IDENTIFY_QUERY];
-        let (outcome, _) = run(IDENTIFY_CLUSTER, &query, &mut state, 0);
+        let (outcome, _) = run(CLUSTER_IDENTIFY, &query, &mut state, 0);
 
-        assert!(!outcome.has_reply, "the spec asks an idle device not to answer");
+        assert!(
+            !outcome.has_reply,
+            "the spec asks an idle device not to answer"
+        );
     }
 
     #[test]
@@ -1375,7 +1347,7 @@ mod tests {
         write.push(TYPE_UINT16);
         write.extend_from_slice(&7u16.to_le_bytes());
 
-        let (outcome, reply) = run(IDENTIFY_CLUSTER, &write, &mut state, 0);
+        let (outcome, reply) = run(CLUSTER_IDENTIFY, &write, &mut state, 0);
 
         assert!(outcome.has_reply);
         assert_eq!(reply[3], STATUS_SUCCESS);
@@ -1390,19 +1362,17 @@ mod tests {
         write.push(TYPE_UINT16);
         write.extend_from_slice(&1u16.to_le_bytes());
 
-        let (_, reply) = run(IDENTIFY_CLUSTER, &write, &mut state, 0);
+        let (_, reply) = run(CLUSTER_IDENTIFY, &write, &mut state, 0);
 
         assert_eq!(reply[3], STATUS_UNSUPPORTED_ATTRIBUTE);
     }
-
-    const LEVEL_CLUSTER: u16 = super::super::zdo::CLUSTER_LEVEL_CONTROL;
 
     #[test]
     fn a_move_to_level_without_a_level_is_refused() {
         let mut state = State::default();
         let truncated = vec![0x01, 0x61, LEVEL_MOVE_TO_LEVEL];
 
-        let (outcome, reply) = run(LEVEL_CLUSTER, &truncated, &mut state, 0);
+        let (outcome, reply) = run(CLUSTER_LEVEL_CONTROL, &truncated, &mut state, 0);
 
         assert!(outcome.has_reply);
         assert_eq!(reply[4], STATUS_INVALID_FIELD);
@@ -1419,7 +1389,7 @@ mod tests {
         configure.extend_from_slice(&60u16.to_le_bytes());
         configure.push(1);
 
-        let (_, reply) = run(LEVEL_CLUSTER, &configure, &mut state, 0);
+        let (_, reply) = run(CLUSTER_LEVEL_CONTROL, &configure, &mut state, 0);
 
         assert_eq!(reply[3], STATUS_SUCCESS);
         let reporting = state.level_report.reporting.expect("accepted");
@@ -1436,14 +1406,12 @@ mod tests {
 
         let mut read = vec![0x00, 0x63, CMD_READ_ATTRIBUTES];
         read.extend_from_slice(&ATTR_CURRENT_LEVEL.to_le_bytes());
-        let (_, reply) = run(LEVEL_CLUSTER, &read, &mut state, 0);
+        let (_, reply) = run(CLUSTER_LEVEL_CONTROL, &read, &mut state, 0);
 
         assert_eq!(reply[5], STATUS_SUCCESS);
         assert_eq!(reply[6], TYPE_UINT8);
         assert_eq!(reply[7], 33);
     }
-
-    const COLOUR_CLUSTER: u16 = super::super::zdo::CLUSTER_COLOUR_CONTROL;
 
     fn read(cluster: u16, attribute: u16, state: &mut State) -> Vec<u8> {
         let mut request = vec![0x00, 0x70, CMD_READ_ATTRIBUTES];
@@ -1455,7 +1423,7 @@ mod tests {
     #[test]
     fn the_capabilities_claim_hue_saturation_and_temperature_and_nothing_else() {
         let mut state = State::default();
-        let reply = read(COLOUR_CLUSTER, ATTR_COLOUR_CAPABILITIES, &mut state);
+        let reply = read(CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_CAPABILITIES, &mut state);
 
         assert_eq!(reply[5], STATUS_SUCCESS);
         assert_eq!(reply[6], TYPE_BITMAP16);
@@ -1466,22 +1434,30 @@ mod tests {
     fn the_mired_range_is_readable_so_a_bridge_need_not_assume_one() {
         let mut state = State::default();
 
-        let coolest = read(COLOUR_CLUSTER, ATTR_TEMPERATURE_MIN_MIREDS, &mut state);
+        let coolest = read(
+            CLUSTER_COLOUR_CONTROL,
+            ATTR_TEMPERATURE_MIN_MIREDS,
+            &mut state,
+        );
         assert_eq!(u16::from_le_bytes([coolest[7], coolest[8]]), COOLEST_MIREDS);
 
-        let warmest = read(COLOUR_CLUSTER, ATTR_TEMPERATURE_MAX_MIREDS, &mut state);
+        let warmest = read(
+            CLUSTER_COLOUR_CONTROL,
+            ATTR_TEMPERATURE_MAX_MIREDS,
+            &mut state,
+        );
         assert_eq!(u16::from_le_bytes([warmest[7], warmest[8]]), WARMEST_MIREDS);
     }
 
     #[test]
     fn the_colour_mode_says_which_of_the_two_is_live() {
         let mut state = State::default();
-        let white = read(COLOUR_CLUSTER, ATTR_COLOUR_MODE, &mut state);
+        let white = read(CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_MODE, &mut state);
         assert_eq!(white[6], TYPE_ENUM8);
         assert_eq!(white[7], COLOUR_MODE_TEMPERATURE);
 
         state.set_hue_and_saturation(100, 200);
-        let wheel = read(COLOUR_CLUSTER, ATTR_COLOUR_MODE, &mut state);
+        let wheel = read(CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_MODE, &mut state);
         assert_eq!(wheel[7], COLOUR_MODE_HUE_SATURATION);
     }
 
@@ -1495,21 +1471,33 @@ mod tests {
         configure.extend_from_slice(&60u16.to_le_bytes());
         configure.push(1);
 
-        let (_, reply) = run(COLOUR_CLUSTER, &configure, &mut state, 0);
+        let (_, reply) = run(CLUSTER_COLOUR_CONTROL, &configure, &mut state, 0);
 
         assert_eq!(reply[3], STATUS_UNSUPPORTED_ATTRIBUTE);
     }
 
-    const GROUPS_CLUSTER: u16 = super::super::zdo::CLUSTER_GROUPS;
-    const SCENES_CLUSTER: u16 = super::super::zdo::CLUSTER_SCENES;
-
     #[test]
     fn the_membership_response_lists_every_group_and_the_room_left() {
         let mut state = State::default();
-        run(GROUPS_CLUSTER, &[0x01, 0x80, GROUP_ADD, 0x07, 0x00, 0x00], &mut state, 0);
-        run(GROUPS_CLUSTER, &[0x01, 0x81, GROUP_ADD, 0x09, 0x00, 0x00], &mut state, 0);
+        run(
+            CLUSTER_GROUPS,
+            &[0x01, 0x80, GROUP_ADD, 0x07, 0x00, 0x00],
+            &mut state,
+            0,
+        );
+        run(
+            CLUSTER_GROUPS,
+            &[0x01, 0x81, GROUP_ADD, 0x09, 0x00, 0x00],
+            &mut state,
+            0,
+        );
 
-        let (_, reply) = run(GROUPS_CLUSTER, &[0x01, 0x82, GROUP_GET_MEMBERSHIP, 0], &mut state, 0);
+        let (_, reply) = run(
+            CLUSTER_GROUPS,
+            &[0x01, 0x82, GROUP_GET_MEMBERSHIP, 0],
+            &mut state,
+            0,
+        );
 
         assert_eq!(reply[2], GROUP_GET_MEMBERSHIP);
         assert_eq!(reply[3], (MAX_GROUPS - 2) as u8, "two of four slots taken");
@@ -1521,10 +1509,15 @@ mod tests {
     #[test]
     fn a_second_add_of_the_same_group_says_it_is_already_there() {
         let mut state = State::default();
-        run(GROUPS_CLUSTER, &[0x01, 0x83, GROUP_ADD, 0x07, 0x00, 0x00], &mut state, 0);
+        run(
+            CLUSTER_GROUPS,
+            &[0x01, 0x83, GROUP_ADD, 0x07, 0x00, 0x00],
+            &mut state,
+            0,
+        );
 
         let (_, reply) = run(
-            GROUPS_CLUSTER,
+            CLUSTER_GROUPS,
             &[0x01, 0x84, GROUP_ADD, 0x07, 0x00, 0x00],
             &mut state,
             0,
@@ -1538,9 +1531,19 @@ mod tests {
         let mut state = State::default();
         state.settle(200, true);
         state.set_hue_and_saturation(60, 180);
-        run(SCENES_CLUSTER, &[0x01, 0x85, SCENE_STORE, 0x00, 0x00, 0x01], &mut state, 0);
+        run(
+            CLUSTER_SCENES,
+            &[0x01, 0x85, SCENE_STORE, 0x00, 0x00, 0x01],
+            &mut state,
+            0,
+        );
 
-        let (_, reply) = run(SCENES_CLUSTER, &[0x01, 0x86, SCENE_VIEW, 0x00, 0x00, 0x01], &mut state, 0);
+        let (_, reply) = run(
+            CLUSTER_SCENES,
+            &[0x01, 0x86, SCENE_VIEW, 0x00, 0x00, 0x01],
+            &mut state,
+            0,
+        );
 
         assert_eq!(reply[3], STATUS_SUCCESS);
         assert_eq!(reply[6], 0x01, "the scene it was asked about");
@@ -1549,26 +1552,44 @@ mod tests {
         let fields = &reply[10..];
         assert_eq!(&fields[..4], &[0x06, 0x00, 0x01, 0x01], "on");
         assert_eq!(&fields[4..8], &[0x08, 0x00, 0x01, 200], "the brightness");
-        assert_eq!(&fields[8..11], &[0x00, 0x03, 0x0d], "thirteen octets of colour");
-        assert_eq!(u16::from_le_bytes([fields[15], fields[16]]) >> 8, 60, "the hue");
+        assert_eq!(
+            &fields[8..11],
+            &[0x00, 0x03, 0x0d],
+            "thirteen octets of colour"
+        );
+        assert_eq!(
+            u16::from_le_bytes([fields[15], fields[16]]) >> 8,
+            60,
+            "the hue"
+        );
         assert_eq!(fields[17], 180, "the saturation");
     }
 
     #[test]
     fn the_attributes_say_which_scene_is_live_and_whether_it_still_is() {
         let mut state = State::default();
-        run(SCENES_CLUSTER, &[0x01, 0x87, SCENE_STORE, 0x00, 0x00, 0x04], &mut state, 0);
+        run(
+            CLUSTER_SCENES,
+            &[0x01, 0x87, SCENE_STORE, 0x00, 0x00, 0x04],
+            &mut state,
+            0,
+        );
 
-        let count = read(SCENES_CLUSTER, ATTR_SCENE_COUNT, &mut state);
+        let count = read(CLUSTER_SCENES, ATTR_SCENE_COUNT, &mut state);
         assert_eq!(count[7], 1);
 
-        run(SCENES_CLUSTER, &[0x01, 0x88, SCENE_RECALL, 0x00, 0x00, 0x04], &mut state, 0);
-        assert_eq!(read(SCENES_CLUSTER, ATTR_CURRENT_SCENE, &mut state)[7], 4);
-        assert_eq!(read(SCENES_CLUSTER, ATTR_SCENE_VALID, &mut state)[7], 1);
+        run(
+            CLUSTER_SCENES,
+            &[0x01, 0x88, SCENE_RECALL, 0x00, 0x00, 0x04],
+            &mut state,
+            0,
+        );
+        assert_eq!(read(CLUSTER_SCENES, ATTR_CURRENT_SCENE, &mut state)[7], 4);
+        assert_eq!(read(CLUSTER_SCENES, ATTR_SCENE_VALID, &mut state)[7], 1);
 
         state.settle(3, false);
         assert_eq!(
-            read(SCENES_CLUSTER, ATTR_SCENE_VALID, &mut state)[7],
+            read(CLUSTER_SCENES, ATTR_SCENE_VALID, &mut state)[7],
             0,
             "moving the light by hand leaves the scene behind"
         );
@@ -1577,11 +1598,11 @@ mod tests {
     #[test]
     fn reading_the_attribute_reports_the_remaining_time() {
         let mut state = State::default();
-        run(IDENTIFY_CLUSTER, &identify_command(60), &mut state, 0);
+        run(CLUSTER_IDENTIFY, &identify_command(60), &mut state, 0);
 
         let mut read = vec![0x00, 0x46, CMD_READ_ATTRIBUTES];
         read.extend_from_slice(&ATTR_IDENTIFY_TIME.to_le_bytes());
-        let (_, reply) = run(IDENTIFY_CLUSTER, &read, &mut state, 20_000);
+        let (_, reply) = run(CLUSTER_IDENTIFY, &read, &mut state, 20_000);
 
         assert_eq!(reply[5], STATUS_SUCCESS);
         assert_eq!(reply[6], TYPE_UINT16);

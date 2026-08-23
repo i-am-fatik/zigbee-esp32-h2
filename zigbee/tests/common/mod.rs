@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use zigbee::{Config, Device, Event, Instant, APPLICATION};
+use zigbee::{Config, Device, Event, Instant, APPLICATION, CLUSTER_GROUPS, CLUSTER_SCENES};
 
 pub const OUR_IEEE: u64 = 0x0011_2233_4455_6677;
 pub const PAN: u16 = 0xa269;
@@ -162,4 +162,37 @@ pub fn transport_network_key(key: &[u8; 16], sequence: u8, to: u64) -> Vec<u8> {
     application.push(sequence);
     application.extend_from_slice(&to.to_le_bytes());
     deliver(&application)
+}
+
+const GROUP_ADD: u8 = 0x00;
+const SCENE_STORE: u8 = 0x04;
+const SCENE_RECALL: u8 = 0x05;
+
+/// Puts the device in a group, which is what every group and scene test needs
+/// before a group means anything to it.
+pub fn join_group(device: &mut Device, group: u16, now: u32) {
+    let mut arguments = group.to_le_bytes().to_vec();
+    arguments.push(0);
+    device.receive(
+        &command(CLUSTER_GROUPS, 0xa0, GROUP_ADD, &arguments),
+        at(now),
+    );
+}
+
+pub fn store_scene(device: &mut Device, group: u16, scene: u8, now: u32) {
+    let mut arguments = group.to_le_bytes().to_vec();
+    arguments.push(scene);
+    device.receive(
+        &command(CLUSTER_SCENES, 0xa1, SCENE_STORE, &arguments),
+        at(now),
+    );
+}
+
+pub fn recall_scene(device: &mut Device, group: u16, scene: u8, now: u32) {
+    let mut arguments = group.to_le_bytes().to_vec();
+    arguments.push(scene);
+    device.receive(
+        &command(CLUSTER_SCENES, 0xa2, SCENE_RECALL, &arguments),
+        at(now),
+    );
 }

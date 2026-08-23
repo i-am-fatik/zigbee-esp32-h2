@@ -27,7 +27,12 @@ fn wheel(hue: u8, saturation: u8) -> Vec<u8> {
 fn white(mireds: u16) -> Vec<u8> {
     let mut arguments = mireds.to_le_bytes().to_vec();
     arguments.extend_from_slice(&0u16.to_le_bytes());
-    command(CLUSTER_COLOUR_CONTROL, 0x71, MOVE_TO_TEMPERATURE, &arguments)
+    command(
+        CLUSTER_COLOUR_CONTROL,
+        0x71,
+        MOVE_TO_TEMPERATURE,
+        &arguments,
+    )
 }
 
 fn nudge(id: u8, direction: u8, size: u8) -> Vec<u8> {
@@ -73,7 +78,12 @@ fn the_wheel_sets_both_hue_and_saturation() {
 fn moving_the_hue_leaves_the_saturation_alone() {
     let mut device = coloured(10, 180);
     device.receive(
-        &command(CLUSTER_COLOUR_CONTROL, 0x73, MOVE_TO_HUE, &[200, 0x00, 0x00, 0x00]),
+        &command(
+            CLUSTER_COLOUR_CONTROL,
+            0x73,
+            MOVE_TO_HUE,
+            &[200, 0x00, 0x00, 0x00],
+        ),
         at(10),
     );
 
@@ -90,7 +100,12 @@ fn moving_the_hue_leaves_the_saturation_alone() {
 fn moving_the_saturation_leaves_the_hue_alone() {
     let mut device = coloured(10, 180);
     device.receive(
-        &command(CLUSTER_COLOUR_CONTROL, 0x74, MOVE_TO_SATURATION, &[40, 0x00, 0x00]),
+        &command(
+            CLUSTER_COLOUR_CONTROL,
+            0x74,
+            MOVE_TO_SATURATION,
+            &[40, 0x00, 0x00],
+        ),
         at(10),
     );
 

@@ -22,9 +22,8 @@ const BLOCK: usize = 48;
 /// A device on a network that has been told which firmware it is running, which
 /// is the only kind that asks a server for anything.
 fn joined_updatable() -> Device {
-    let mut device = Device::new(
-        Config::new(common::OUR_IEEE).with_firmware(MANUFACTURER, IMAGE_TYPE, RUNNING),
-    );
+    let mut device =
+        Device::new(Config::new(common::OUR_IEEE).with_firmware(MANUFACTURER, IMAGE_TYPE, RUNNING));
     join(&mut device);
     device
 }

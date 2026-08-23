@@ -22,8 +22,6 @@ use store::Store;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-/// What the board's LED says about the device: searching, joined and dark, or
-/// switched on by the coordinator.
 const SEARCHING: Rgb = Rgb::new(0, 0, 60);
 const IDLE_ON_NETWORK: Rgb = Rgb::new(0, 40, 0);
 
@@ -41,13 +39,28 @@ const IDENTIFY_BLINK_MS: u32 = 120;
 fn our_extended_address() -> u64 {
     let mac = esp_hal::efuse::base_mac_address();
     let mac = mac.as_bytes();
-    u64::from_be_bytes([
-        mac[0], mac[1], mac[2], 0xff, 0xfe, mac[3], mac[4], mac[5],
-    ])
+    u64::from_be_bytes([mac[0], mac[1], mac[2], 0xff, 0xfe, mac[3], mac[4], mac[5]])
 }
 
-fn lit(colour: Colour, level: u8) -> Rgb {
-    match colour {
+/// What the board's LED is showing right now, which is the whole of what the
+/// device says about itself without a coordinator to ask.
+fn indicator(device: &Device, blink_lit: bool) -> Rgb {
+    if device.identifying() {
+        return if blink_lit {
+            IDENTIFYING.dim(160)
+        } else {
+            Rgb::OFF
+        };
+    }
+    if !device.joined() {
+        return if blink_lit { SEARCHING } else { Rgb::OFF };
+    }
+    if !device.on_off() {
+        return IDLE_ON_NETWORK.dim(20);
+    }
+
+    let level = device.level();
+    match device.colour() {
         Colour::HueSaturation { hue, saturation } => {
             Rgb::from_hue_and_saturation(hue, saturation, level)
         }
@@ -82,7 +95,7 @@ fn main() -> ! {
         }
         println!();
     }
-    let mut device = match store.load() {
+    let mut device = match store.load_credentials() {
         Some(credentials) => {
             println!(
                 "store: rejoining as 0x{:04x} on channel {}",
@@ -108,7 +121,7 @@ fn main() -> ! {
     let mut blink_lit = false;
 
     loop {
-        let mut received = [0u8; 128];
+        let mut received = [0u8; zigbee::MAX_FRAME_LEN];
         while let Some(len) = radio.receive(&mut received) {
             device.receive(&received[..len], now());
         }
@@ -165,13 +178,19 @@ fn main() -> ! {
                 }
                 Event::Left => {
                     println!("join: left the network");
-                    store.forget();
+                    store.forget_network();
                 }
                 Event::OnOffChanged(on) => {
                     println!("zcl: light is now {}", if on { "ON" } else { "OFF" })
                 }
                 Event::LevelChanged(level) => println!("zcl: brightness {}", level),
                 Event::ColourChanged(colour) => println!("zcl: colour {:?}", colour),
+                Event::CredentialsChanged(credentials) => {
+                    store.save_credentials(&credentials);
+                }
+                Event::TablesChanged(tables) => {
+                    store.save_tables(&tables);
+                }
                 Event::FirmwareOffered { version, size } => {
                     println!("ota: image 0x{:08x}, {} octets", version, size);
                     store.begin_firmware();
@@ -187,12 +206,6 @@ fn main() -> ! {
                     println!("ota: update abandoned, the old image stands");
                     store.abandon_firmware();
                 }
-                Event::CredentialsChanged(credentials) => {
-                    store.save(&credentials);
-                }
-                Event::TablesChanged(tables) => {
-                    store.save_tables(&tables);
-                }
                 _ => {}
             }
         }
@@ -207,25 +220,8 @@ fn main() -> ! {
             blink_lit = !blink_lit;
         }
 
-        let colour = if device.identifying() {
-            if blink_lit {
-                IDENTIFYING.dim(160)
-            } else {
-                Rgb::OFF
-            }
-        } else if !device.joined() {
-            if blink_lit {
-                SEARCHING
-            } else {
-                Rgb::OFF
-            }
-        } else if device.on_off() {
-            lit(device.colour(), device.level())
-        } else {
-            IDLE_ON_NETWORK.dim(20)
-        };
         if let Some(led) = led.as_mut() {
-            led.show(colour);
+            led.show(indicator(&device, blink_lit));
         }
     }
 }

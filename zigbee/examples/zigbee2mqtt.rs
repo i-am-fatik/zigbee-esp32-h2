@@ -16,8 +16,7 @@ use std::collections::BTreeSet;
 
 use zigbee::{
     APPLICATION, CLUSTER_BASIC, CLUSTER_COLOUR_CONTROL, CLUSTER_GROUPS, CLUSTER_IDENTIFY,
-    CLUSTER_LEVEL_CONTROL, CLUSTER_ON_OFF, CLUSTER_OTA, CLUSTER_SCENES,
-    COLOUR_TEMPERATURE_MIREDS,
+    CLUSTER_LEVEL_CONTROL, CLUSTER_ON_OFF, CLUSTER_OTA, CLUSTER_SCENES, COLOUR_TEMPERATURE_MIREDS,
 };
 
 struct Extend {
@@ -107,9 +106,7 @@ fn main() {
         Ok(identity) => identity,
         Err(problem) => {
             eprintln!("{problem}");
-            eprintln!(
-                "usage: --model <interviewed model> --vendor <name> [--description <text>]"
-            );
+            eprintln!("usage: --model <interviewed model> --vendor <name> [--description <text>]");
             std::process::exit(2);
         }
     };
@@ -153,9 +150,7 @@ fn main() {
     println!("}};");
 
     for cluster in unmapped {
-        eprintln!(
-            "warning: cluster 0x{cluster:04x} is served but no extend describes it"
-        );
+        eprintln!("warning: cluster 0x{cluster:04x} is served but no extend describes it");
     }
     eprintln!(
         "note: endpoint {}, profile 0x{:04x}, device 0x{:04x}",

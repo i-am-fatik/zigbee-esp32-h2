@@ -21,10 +21,13 @@ fn rotating() -> Device {
 }
 
 fn saved(device: &mut Device) -> Option<Credentials> {
-    events(device).into_iter().rev().find_map(|event| match event {
-        Event::CredentialsChanged(saved) => Some(saved),
-        _ => None,
-    })
+    events(device)
+        .into_iter()
+        .rev()
+        .find_map(|event| match event {
+            Event::CredentialsChanged(saved) => Some(saved),
+            _ => None,
+        })
 }
 
 #[test]

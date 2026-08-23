@@ -1,8 +1,8 @@
 use esp_hal::gpio::{Level, OutputPin};
 use esp_hal::peripherals::RMT;
 use esp_hal::rmt::{Channel, PulseCode, Rmt, Tx, TxChannelConfig, TxChannelCreator};
-use esp_hal::Blocking;
 use esp_hal::time::Rate;
+use esp_hal::Blocking;
 use zigbee::{COLOUR_TEMPERATURE_MIREDS, MAX_HUE};
 
 /// The RMT source clock the ESP32-H2 offers. One tick is 31.25 ns, which is
@@ -69,7 +69,8 @@ impl Rgb {
         let sector = scaled / WHEEL;
         let along = scaled % WHEEL;
 
-        let shade = |towards: u16| (value as u16 * (255 - saturation as u16 * towards / 255) / 255) as u8;
+        let shade =
+            |towards: u16| (value as u16 * (255 - saturation as u16 * towards / 255) / 255) as u8;
         let bottom = shade(255);
         let falling = shade(along);
         let rising = shade(255 - along);
@@ -89,8 +90,8 @@ impl Rgb {
     pub fn from_mireds(mireds: u16, value: u8) -> Self {
         let coolest = *COLOUR_TEMPERATURE_MIREDS.start();
         let warmest = *COLOUR_TEMPERATURE_MIREDS.end();
-        let along = (mireds.clamp(coolest, warmest) - coolest) as u32 * 255
-            / (warmest - coolest) as u32;
+        let along =
+            (mireds.clamp(coolest, warmest) - coolest) as u32 * 255 / (warmest - coolest) as u32;
         DAYLIGHT.blend(CANDLE, along as u8).dim(value)
     }
 

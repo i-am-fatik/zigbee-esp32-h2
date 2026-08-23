@@ -3,6 +3,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use esp_hal::time::{Duration, Instant};
 use esp_radio::ieee802154::{CcaMode, Config, Ieee802154, RawReceived};
 use zigbee::RadioConfig;
+use zigbee::MAX_FRAME_LEN;
 
 /// The two trailing octets the PHY reserves for the checksum. Hardware fills
 /// them on transmit and overwrites them with signal quality on receive.
@@ -109,7 +110,7 @@ impl<'a> Radio<'a> {
         false
     }
 
-    pub fn receive(&mut self, into: &mut [u8; 128]) -> Option<usize> {
+    pub fn receive(&mut self, into: &mut [u8; MAX_FRAME_LEN]) -> Option<usize> {
         let RawReceived { data, .. } = self.driver.raw_received()?;
         let psdu_len = data[0] as usize;
         if psdu_len < FCS_LEN || psdu_len > data.len() - 1 {

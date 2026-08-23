@@ -1,14 +1,11 @@
 use crate::buf::Writer;
-use crate::crypto::{install_code_link_key, key_transport_key, INSTALL_CODE_LEN, KEY_LEN};
-use crate::{aps, mac, nwk, ota, zcl, zdo, Instant, CHANNELS};
+use crate::crypto::{install_code_link_key, key_transport_key, KEY_LEN};
+use crate::{aps, mac, nwk, ota, zcl, zdo, Instant, CHANNELS, INSTALL_CODE_LEN};
 
 /// The link key every Zigbee device is allowed to fall back to when it joins a
 /// centralised network without an install code.
 const DEFAULT_TRUST_CENTRE_LINK_KEY: [u8; KEY_LEN] = *b"ZigBeeAlliance09";
 
-/// The key the join is protected by: derived from this device's install code
-/// when it has one, and otherwise the one printed in the specification, which
-/// everybody already has.
 fn link_key(config: &Config) -> [u8; KEY_LEN] {
     match config.install_code {
         Some(code) => install_code_link_key(&code),
@@ -24,8 +21,7 @@ const POLL_INTERVAL_MS: u32 = 300;
 const ASSOCIATION_TIMEOUT_MS: u32 = 6_000;
 const KEY_TIMEOUT_MS: u32 = 12_000;
 
-/// How often a joined device checks that its parent is still listening, and how
-/// many refused frames in a row it takes before that parent is presumed gone.
+/// How often a joined device checks that its parent is still listening.
 const KEEPALIVE_MS: u32 = 60_000;
 const FAILURES_BEFORE_REJOIN: u8 = 3;
 const REJOIN_TIMEOUT_MS: u32 = 20_000;
@@ -36,6 +32,8 @@ const REJOIN_ACCEPTED: u8 = 0x00;
 /// How far ahead of the live counter a stored counter runs, so a power cut can
 /// never replay a frame counter the coordinator has already accepted.
 const COUNTER_MARGIN: u32 = 1024;
+
+const COORDINATOR_ENDPOINT: u8 = 1;
 
 const UNASSIGNED: u16 = 0xffff;
 const OUTBOX_CAPACITY: usize = 4;
@@ -120,12 +118,7 @@ impl Config {
     /// Without this the device serves the upgrade cluster and never asks for an
     /// image, because a server cannot answer a device that will not say what it
     /// is already running.
-    pub const fn with_firmware(
-        mut self,
-        manufacturer: u16,
-        image_type: u16,
-        version: u32,
-    ) -> Self {
+    pub const fn with_firmware(mut self, manufacturer: u16, image_type: u16, version: u32) -> Self {
         self.firmware = Some(ota::Identity {
             manufacturer,
             image_type,
@@ -161,7 +154,7 @@ pub struct Credentials {
 
 impl Credentials {
     /// The number of bytes [`Credentials::to_bytes`] produces.
-    pub const SIZE: usize = 32;
+    pub const LEN: usize = 32;
 
     const MAGIC: u32 = 0x5a42_4832;
 
@@ -169,7 +162,7 @@ impl Credentials {
     ///
     /// ```
     /// # use zigbee::{Config, Credentials, Device, Event, Instant};
-    /// # fn persist(device: &mut Device, flash: &mut [u8; Credentials::SIZE]) {
+    /// # fn persist(device: &mut Device, flash: &mut [u8; Credentials::LEN]) {
     /// while let Some(event) = device.next_event() {
     ///     if let Event::CredentialsChanged(saved) = event {
     ///         *flash = saved.to_bytes();
@@ -177,8 +170,8 @@ impl Credentials {
     /// }
     /// # }
     /// ```
-    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
-        let mut record = [0u8; Self::SIZE];
+    pub fn to_bytes(&self) -> [u8; Self::LEN] {
+        let mut record = [0u8; Self::LEN];
         record[0..4].copy_from_slice(&Self::MAGIC.to_le_bytes());
         record[4] = self.channel;
         record[5] = self.key_sequence;
@@ -199,7 +192,7 @@ impl Credentials {
     ///
     /// ```
     /// # use zigbee::{Config, Credentials, Device};
-    /// # let flash = [0u8; Credentials::SIZE];
+    /// # let flash = [0u8; Credentials::LEN];
     /// # let config = Config::new(0x0011_2233_4455_6677);
     /// let device = match Credentials::from_bytes(&flash) {
     ///     Some(saved) => Device::restore(config, saved),
@@ -207,7 +200,7 @@ impl Credentials {
     /// };
     /// # let _ = device;
     /// ```
-    pub fn from_bytes(record: &[u8; Self::SIZE]) -> Option<Self> {
+    pub fn from_bytes(record: &[u8; Self::LEN]) -> Option<Self> {
         if u32::from_le_bytes([record[0], record[1], record[2], record[3]]) != Self::MAGIC {
             return None;
         }
@@ -279,13 +272,17 @@ pub struct Transmission<'a> {
     pub request_cca: bool,
 }
 
+const SCENE_RECORD: usize = 10;
+const SCENES_AT: usize = 4 + 2 * zcl::MAX_GROUPS + 1;
+const PACKED: usize = SCENES_AT + SCENE_RECORD * zcl::MAX_SCENES;
+
 /// The groups the light belongs to and the scenes it can put back, in the form
 /// to hand to storage.
 ///
 /// These outlive a restart only if the caller writes them down. They carry no
 /// secret, unlike [`Credentials`], so where they are kept matters less.
 #[derive(Clone, Copy)]
-pub struct Tables([u8; Tables::SIZE]);
+pub struct Tables([u8; Tables::LEN]);
 
 impl core::fmt::Debug for Tables {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -298,7 +295,7 @@ impl Tables {
     ///
     /// It is rounded up to a whole number of 32 bit words, because a NOR flash
     /// writes words and would refuse a record that ends part way through one.
-    pub const SIZE: usize = PACKED.next_multiple_of(4);
+    pub const LEN: usize = PACKED.next_multiple_of(4);
 
     const MAGIC: u32 = 0x5a54_424c;
 
@@ -306,7 +303,7 @@ impl Tables {
     ///
     /// ```
     /// # use zigbee::{Device, Event, Tables};
-    /// # fn persist(device: &mut Device, flash: &mut [u8; Tables::SIZE]) {
+    /// # fn persist(device: &mut Device, flash: &mut [u8; Tables::LEN]) {
     /// while let Some(event) = device.next_event() {
     ///     if let Event::TablesChanged(saved) = event {
     ///         *flash = saved.to_bytes();
@@ -314,7 +311,7 @@ impl Tables {
     /// }
     /// # }
     /// ```
-    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+    pub fn to_bytes(&self) -> [u8; Self::LEN] {
         self.0
     }
 
@@ -323,13 +320,13 @@ impl Tables {
     ///
     /// Blank flash, an older layout and somebody else's data all read back as
     /// `None`, which is the signal to start out belonging to nothing.
-    pub fn from_bytes(record: &[u8; Self::SIZE]) -> Option<Self> {
+    pub fn from_bytes(record: &[u8; Self::LEN]) -> Option<Self> {
         let magic = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
         (magic == Self::MAGIC).then_some(Self(*record))
     }
 
     fn of(state: &zcl::State) -> Self {
-        let mut record = [0u8; Self::SIZE];
+        let mut record = [0u8; Self::LEN];
         record[0..4].copy_from_slice(&Self::MAGIC.to_le_bytes());
 
         for (slot, group) in record[4..].chunks_mut(2).zip(state.groups) {
@@ -379,10 +376,6 @@ impl Tables {
     }
 }
 
-const SCENE_RECORD: usize = 10;
-const SCENES_AT: usize = 4 + 2 * zcl::MAX_GROUPS + 1;
-const PACKED: usize = SCENES_AT + SCENE_RECORD * zcl::MAX_SCENES;
-
 /// How the light was last told to colour itself.
 ///
 /// The two are alternatives rather than layers: setting one replaces the other,
@@ -419,14 +412,14 @@ pub enum Event {
     },
     /// The device left, or was told to leave, and is scanning again.
     Left,
-    /// The coordinator switched the On/Off application.
+    /// The light was switched, by the coordinator or by the caller.
     OnOffChanged(bool),
+    /// The brightness moved, from 0 to [`crate::MAX_LEVEL`].
+    LevelChanged(u8),
+    /// The colour moved, or switched which way it is stated.
+    ColourChanged(Colour),
     /// Credentials worth writing to storage, superseding any earlier ones.
     CredentialsChanged(Credentials),
-    /// The coordinator moved the brightness, from 0 to [`crate::MAX_LEVEL`].
-    LevelChanged(u8),
-    /// The coordinator moved the colour, or switched which way it is stated.
-    ColourChanged(Colour),
     /// A group was joined or left, or a scene was written or forgotten. Worth
     /// writing to storage, superseding any earlier tables.
     TablesChanged(Tables),
@@ -512,7 +505,7 @@ impl<T: Copy, const N: usize> Queue<T, N> {
 
 #[derive(Clone, Copy)]
 struct Outgoing {
-    frame: [u8; mac::MAX_FRAME],
+    frame: [u8; mac::MAX_FRAME_LEN],
     len: u8,
     request_cca: bool,
 }
@@ -585,7 +578,7 @@ impl Device {
             consecutive_failures: 0,
             next_keepalive: Instant::from_millis(KEEPALIVE_MS),
             outbox: Queue::new(Outgoing {
-                frame: [0; mac::MAX_FRAME],
+                frame: [0; mac::MAX_FRAME_LEN],
                 len: 0,
                 request_cca: false,
             }),
@@ -613,208 +606,12 @@ impl Device {
         device
     }
 
-    /// How the radio must currently be tuned. Apply it whenever it changes.
-    pub const fn radio(&self) -> RadioConfig {
-        self.radio
-    }
-
-    /// Whether the device is on a network and holds the network key.
-    pub const fn joined(&self) -> bool {
-        matches!(self.phase, Phase::Joined)
-    }
-
-    /// Tells the stack a frame could not be delivered.
-    ///
-    /// A radio reports this when it exhausts its attempts. Enough of them in a
-    /// row means the parent has stopped listening, and the device goes looking
-    /// for another one rather than talking into an empty room.
-    ///
-    /// A caller that never reports delivery keeps a device talking to a parent
-    /// that stopped answering, so report both outcomes of every send.
-    ///
-    /// ```
-    /// # use zigbee::{Device, Instant};
-    /// # fn send(_frame: &[u8], _request_cca: bool) -> bool { true }
-    /// # fn drive(device: &mut Device, now: Instant) {
-    /// while let Some(outgoing) = device.next_transmission() {
-    ///     let delivered = send(outgoing.frame, outgoing.request_cca);
-    ///     if delivered {
-    ///         device.transmission_delivered();
-    ///     } else {
-    ///         device.transmission_failed(now);
-    ///     }
-    /// }
-    /// # }
-    /// ```
-    pub fn transmission_failed(&mut self, now: Instant) {
-        if !self.joined() {
-            return;
-        }
-        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-        if self.consecutive_failures < FAILURES_BEFORE_REJOIN {
-            return;
-        }
-        self.start_rejoin(now);
-    }
-
-    /// Tells the stack a frame reached its parent, clearing the run of
-    /// failures that would otherwise start a rejoin. See
-    /// [`Device::transmission_failed`] for the shape a caller writes.
-    pub fn transmission_delivered(&mut self) {
-        self.consecutive_failures = 0;
-    }
-
-    /// The state of the On/Off application.
-    pub const fn on_off(&self) -> bool {
-        self.application.on
-    }
-
-    /// Takes the next piece of a new firmware image, if one arrived.
-    ///
-    /// Write it at its offset and keep going. Nothing is safe to boot until
-    /// [`Event::FirmwareReady`], and an image that stops part way through
-    /// arrives as [`Event::FirmwareAbandoned`] instead.
-    pub fn next_firmware_block(&mut self) -> Option<FirmwareBlock<'_>> {
-        if !self.firmware_block.pending() {
-            return None;
-        }
-        let len = self.firmware_block.len;
-        self.firmware_block.len = 0;
-        Some(FirmwareBlock {
-            offset: self.firmware_block.offset,
-            data: &self.firmware_block.buffer[..len],
-        })
-    }
-
-    /// Gives up on a download, which is what a caller does when it cannot write
-    /// a block down. The server is told, so it stops sending.
-    pub fn abandon_firmware(&mut self) {
-        if !self.firmware.running() {
-            return;
-        }
-        self.send_firmware_request(&ota::Wanted::End(ota::abort()));
-        self.firmware.stop();
-        self.firmware_block.len = 0;
-        self.emit(Event::FirmwareAbandoned);
-    }
-
     /// Puts back groups and scenes read from storage.
     ///
     /// Unlike [`Device::restore`] this is not part of joining a network, so it
     /// can be called on a device built either way.
     pub fn restore_tables(&mut self, tables: Tables) {
         tables.apply(&mut self.application);
-    }
-
-    /// The colour the light was last told to be.
-    ///
-    /// It is independent of [`Device::on_off`] and [`Device::level`], which
-    /// say whether the light is lit and how brightly.
-    pub const fn colour(&self) -> Colour {
-        match self.application.colour_mode {
-            zcl::COLOUR_MODE_TEMPERATURE => Colour::Temperature {
-                mireds: self.application.mireds,
-            },
-            _ => Colour::HueSaturation {
-                hue: self.application.hue,
-                saturation: self.application.saturation,
-            },
-        }
-    }
-
-    /// The brightness the Level Control cluster holds, from 0 to
-    /// [`crate::MAX_LEVEL`].
-    ///
-    /// It is independent of [`Device::on_off`]: a light switched off keeps the
-    /// level it will come back on at.
-    pub const fn level(&self) -> u8 {
-        self.application.level
-    }
-
-    /// Whether the coordinator asked the device to make itself recognisable.
-    ///
-    /// A caller is expected to do something visible while this holds, which is
-    /// the whole point of the Identify cluster.
-    pub const fn identifying(&self) -> bool {
-        self.identifying
-    }
-
-    /// Switches the On/Off application locally, which the device then reports
-    /// to the coordinator if reporting was configured.
-    pub fn set_on_off(&mut self, on: bool) {
-        if self.application.on == on {
-            return;
-        }
-        self.application.on = on;
-        self.application.on_off_report.pending = true;
-        self.emit(Event::OnOffChanged(on));
-    }
-
-    /// Moves the brightness locally, which the device then reports to the
-    /// coordinator if reporting was configured. Anything above
-    /// [`crate::MAX_LEVEL`] is clamped to it, and a ramp under way is
-    /// abandoned, because a local decision outranks one already in flight.
-    pub fn set_level(&mut self, level: u8) {
-        self.application.stop();
-        let level = level.min(crate::MAX_LEVEL);
-        if self.application.level == level {
-            return;
-        }
-        self.application.level = level;
-        self.application.level_report.pending = true;
-        self.emit(Event::LevelChanged(level));
-    }
-
-    /// Takes the next frame to put on the air, if any.
-    pub fn next_transmission(&mut self) -> Option<Transmission<'_>> {
-        if self.outbox.len == 0 {
-            return None;
-        }
-        let index = self.outbox.head;
-        let len = self.outbox.slots[index].len as usize;
-        let request_cca = self.outbox.slots[index].request_cca;
-        self.outbox.head = (index + 1) % OUTBOX_CAPACITY;
-        self.outbox.len -= 1;
-        Some(Transmission {
-            frame: &self.outbox.slots[index].frame[..len],
-            request_cca,
-        })
-    }
-
-    /// Takes the next event, if any.
-    pub fn next_event(&mut self) -> Option<Event> {
-        self.events.pop().flatten()
-    }
-
-    /// Hands the stack a MAC frame the radio received, without the physical
-    /// length byte and without the checksum.
-    pub fn receive(&mut self, frame: &[u8], now: Instant) {
-        if frame.len() > mac::MAX_FRAME {
-            return;
-        }
-        let Some(parsed) = mac::parse(frame) else {
-            return;
-        };
-
-        match parsed.frame_type {
-            mac::FRAME_TYPE_BEACON => {
-                if let Some(beacon) = mac::parse_beacon(&parsed) {
-                    self.on_beacon(beacon, now);
-                }
-            }
-            mac::FRAME_TYPE_COMMAND => {
-                if let Some(response) = mac::parse_association_response(&parsed) {
-                    self.on_association_response(response, now);
-                }
-            }
-            mac::FRAME_TYPE_DATA => {
-                let payload_len = parsed.payload.len();
-                let mut network = [0u8; mac::MAX_FRAME];
-                network[..payload_len].copy_from_slice(parsed.payload);
-                self.on_network_frame(&mut network[..payload_len], now);
-            }
-            _ => {}
-        }
     }
 
     /// Lets time pass: drives scanning, association, polling and reporting.
@@ -903,20 +700,212 @@ impl Device {
             Phase::Joined => {}
         }
     }
+
+    /// Hands the stack a MAC frame the radio received, without the physical
+    /// length byte and without the checksum.
+    pub fn receive(&mut self, frame: &[u8], now: Instant) {
+        if frame.len() > mac::MAX_FRAME_LEN {
+            return;
+        }
+        let Some(parsed) = mac::parse(frame) else {
+            return;
+        };
+
+        match parsed.frame_type {
+            mac::FRAME_TYPE_BEACON => {
+                if let Some(beacon) = mac::parse_beacon(&parsed) {
+                    self.on_beacon(beacon, now);
+                }
+            }
+            mac::FRAME_TYPE_COMMAND => {
+                if let Some(response) = mac::parse_association_response(&parsed) {
+                    self.on_association_response(response, now);
+                }
+            }
+            mac::FRAME_TYPE_DATA => {
+                let payload_len = parsed.payload.len();
+                let mut network = [0u8; mac::MAX_FRAME_LEN];
+                network[..payload_len].copy_from_slice(parsed.payload);
+                self.on_network_frame(&mut network[..payload_len], now);
+            }
+            _ => {}
+        }
+    }
+
+    /// Takes the next frame to put on the air, if any.
+    pub fn next_transmission(&mut self) -> Option<Transmission<'_>> {
+        if self.outbox.len == 0 {
+            return None;
+        }
+        let index = self.outbox.head;
+        let len = self.outbox.slots[index].len as usize;
+        let request_cca = self.outbox.slots[index].request_cca;
+        self.outbox.head = (index + 1) % OUTBOX_CAPACITY;
+        self.outbox.len -= 1;
+        Some(Transmission {
+            frame: &self.outbox.slots[index].frame[..len],
+            request_cca,
+        })
+    }
+
+    /// Takes the next event the caller has to act on, if any.
+    pub fn next_event(&mut self) -> Option<Event> {
+        self.events.pop().flatten()
+    }
+
+    /// Tells the stack a frame reached its parent, clearing the run of
+    /// failures that would otherwise start a rejoin. See
+    /// [`Device::transmission_failed`] for the shape a caller writes.
+    pub fn transmission_delivered(&mut self) {
+        self.consecutive_failures = 0;
+    }
+
+    /// Tells the stack a frame could not be delivered.
+    ///
+    /// A radio reports this when it exhausts its attempts. Enough of them in a
+    /// row means the parent has stopped listening, and the device goes looking
+    /// for another one rather than talking into an empty room.
+    ///
+    /// A caller that never reports delivery keeps a device talking to a parent
+    /// that stopped answering, so report both outcomes of every send.
+    ///
+    /// ```
+    /// # use zigbee::{Device, Instant};
+    /// # fn send(_frame: &[u8], _request_cca: bool) -> bool { true }
+    /// # fn drive(device: &mut Device, now: Instant) {
+    /// while let Some(outgoing) = device.next_transmission() {
+    ///     let delivered = send(outgoing.frame, outgoing.request_cca);
+    ///     if delivered {
+    ///         device.transmission_delivered();
+    ///     } else {
+    ///         device.transmission_failed(now);
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    pub fn transmission_failed(&mut self, now: Instant) {
+        if !self.joined() {
+            return;
+        }
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        if self.consecutive_failures < FAILURES_BEFORE_REJOIN {
+            return;
+        }
+        self.start_rejoin(now);
+    }
+
+    /// How the radio must currently be tuned. Apply it whenever it changes.
+    pub const fn radio(&self) -> RadioConfig {
+        self.radio
+    }
+
+    /// Whether the device is on a network and holds the network key.
+    pub const fn joined(&self) -> bool {
+        matches!(self.phase, Phase::Joined)
+    }
+
+    /// The state of the On/Off application.
+    pub const fn on_off(&self) -> bool {
+        self.application.on
+    }
+
+    /// The brightness the Level Control cluster holds, from 0 to
+    /// [`crate::MAX_LEVEL`].
+    ///
+    /// It is independent of [`Device::on_off`]: a light switched off keeps the
+    /// level it will come back on at.
+    pub const fn level(&self) -> u8 {
+        self.application.level
+    }
+
+    /// The colour the light was last told to be.
+    ///
+    /// It is independent of [`Device::on_off`] and [`Device::level`], which
+    /// say whether the light is lit and how brightly.
+    pub const fn colour(&self) -> Colour {
+        match self.application.colour_mode {
+            zcl::COLOUR_MODE_TEMPERATURE => Colour::Temperature {
+                mireds: self.application.mireds,
+            },
+            _ => Colour::HueSaturation {
+                hue: self.application.hue,
+                saturation: self.application.saturation,
+            },
+        }
+    }
+
+    /// Whether the coordinator asked the device to make itself recognisable.
+    ///
+    /// A caller is expected to do something visible while this holds, which is
+    /// the whole point of the Identify cluster.
+    pub const fn identifying(&self) -> bool {
+        self.identifying
+    }
+
+    /// Switches the On/Off application locally, which the device then reports
+    /// to the coordinator if reporting was configured.
+    pub fn set_on_off(&mut self, on: bool) {
+        if self.application.on == on {
+            return;
+        }
+        self.application.on = on;
+        self.application.on_off_report.pending = true;
+        self.emit(Event::OnOffChanged(on));
+    }
+
+    /// Moves the brightness locally, which the device then reports to the
+    /// coordinator if reporting was configured. Anything above
+    /// [`crate::MAX_LEVEL`] is clamped to it, and a ramp under way is
+    /// abandoned, because a local decision outranks one already in flight.
+    pub fn set_level(&mut self, level: u8) {
+        self.application.stop();
+        let level = level.min(crate::MAX_LEVEL);
+        if self.application.level == level {
+            return;
+        }
+        self.application.level = level;
+        self.application.level_report.pending = true;
+        self.emit(Event::LevelChanged(level));
+    }
+
+    /// Takes the next piece of a new firmware image, if one arrived.
+    ///
+    /// Write it at its offset and keep going. Nothing is safe to boot until
+    /// [`Event::FirmwareReady`], and an image that stops part way through
+    /// arrives as [`Event::FirmwareAbandoned`] instead.
+    pub fn next_firmware_block(&mut self) -> Option<FirmwareBlock<'_>> {
+        if !self.firmware_block.pending() {
+            return None;
+        }
+        let len = self.firmware_block.len;
+        self.firmware_block.len = 0;
+        Some(FirmwareBlock {
+            offset: self.firmware_block.offset,
+            data: &self.firmware_block.buffer[..len],
+        })
+    }
+
+    /// Gives up on a download, which is what a caller does when it cannot write
+    /// a block down. The server is told, so it stops sending.
+    pub fn abandon_firmware(&mut self) {
+        if !self.firmware.running() {
+            return;
+        }
+        self.send_firmware_request(&ota::Wanted::End(ota::STATUS_ABORT));
+        self.firmware.stop();
+        self.firmware_block.len = 0;
+        self.emit(Event::FirmwareAbandoned);
+    }
 }
 
 impl Device {
-    const fn after(now: Instant, millis: u32) -> Instant {
-        now.plus_millis(millis)
-    }
-
     fn emit(&mut self, event: Event) {
         self.events.push(Some(event));
     }
 
     fn enqueue(&mut self, frame: &[u8], request_cca: bool) {
         let mut outgoing = Outgoing {
-            frame: [0; mac::MAX_FRAME],
+            frame: [0; mac::MAX_FRAME_LEN],
             len: frame.len() as u8,
             request_cca,
         };
@@ -959,7 +948,7 @@ impl Device {
     }
 
     fn send_beacon_request(&mut self) {
-        let mut buffer = [0u8; mac::MAX_FRAME];
+        let mut buffer = [0u8; mac::MAX_FRAME_LEN];
         let seq = self.next_mac_seq();
         let mut out = Writer::new(&mut buffer);
         mac::beacon_request(&mut out, seq);
@@ -970,7 +959,7 @@ impl Device {
     }
 
     fn send_association_request(&mut self, candidate: &Candidate) {
-        let mut buffer = [0u8; mac::MAX_FRAME];
+        let mut buffer = [0u8; mac::MAX_FRAME_LEN];
         let seq = self.next_mac_seq();
         let ieee = self.config.ieee;
         let mut out = Writer::new(&mut buffer);
@@ -982,7 +971,7 @@ impl Device {
     }
 
     fn send_data_request(&mut self, pan_id: u16, parent: mac::Addr) {
-        let mut buffer = [0u8; mac::MAX_FRAME];
+        let mut buffer = [0u8; mac::MAX_FRAME_LEN];
         let seq = self.next_mac_seq();
         let us = if self.radio.short_address == UNASSIGNED {
             mac::Addr::Extended(self.config.ieee)
@@ -1008,7 +997,7 @@ impl Device {
             mac::Addr::Short(self.parent)
         };
 
-        let mut buffer = [0u8; mac::MAX_FRAME];
+        let mut buffer = [0u8; mac::MAX_FRAME_LEN];
         let mac_seq = self.next_mac_seq();
         let ieee = self.config.ieee;
         let mut out = Writer::new(&mut buffer);
@@ -1097,7 +1086,13 @@ impl Device {
         let short = self.radio.short_address;
         let ieee = self.config.ieee;
         let mut body = Writer::new(&mut payload);
-        zdo::device_announce(&mut body, seq, short, ieee, mac::CAPABILITY_MAINS_END_DEVICE);
+        zdo::device_announce(
+            &mut body,
+            seq,
+            short,
+            ieee,
+            mac::CAPABILITY_MAINS_END_DEVICE,
+        );
         let Some(announcement) = body.written() else {
             return;
         };
@@ -1159,7 +1154,7 @@ impl Device {
         let server = self.firmware.server();
         self.send_aps_data(
             server,
-            zdo::ENDPOINT,
+            COORDINATOR_ENDPOINT,
             zdo::ENDPOINT,
             ota::CLUSTER,
             aps::PROFILE_HOME_AUTOMATION,
@@ -1181,23 +1176,26 @@ impl Device {
         self.send_firmware_request(&wanted);
     }
 
+    fn report(&mut self, cluster: u16, body: &[u8]) {
+        self.send_aps_data(
+            nwk::COORDINATOR,
+            COORDINATOR_ENDPOINT,
+            zdo::ENDPOINT,
+            cluster,
+            aps::PROFILE_HOME_AUTOMATION,
+            body,
+        );
+    }
+
     fn report_on_off(&mut self) {
         let mut payload = [0u8; 16];
         let seq = self.next_zdo_seq();
         let on = self.application.on;
         let mut body = Writer::new(&mut payload);
         zcl::report_on_off(&mut body, seq, on);
-        let Some(report) = body.written() else {
-            return;
-        };
-        self.send_aps_data(
-            nwk::COORDINATOR,
-            1,
-            zdo::ENDPOINT,
-            zdo::CLUSTER_ON_OFF,
-            aps::PROFILE_HOME_AUTOMATION,
-            report,
-        );
+        if let Some(report) = body.written() {
+            self.report(zdo::CLUSTER_ON_OFF, report);
+        }
     }
 
     fn report_level(&mut self) {
@@ -1206,17 +1204,9 @@ impl Device {
         let level = self.application.level;
         let mut body = Writer::new(&mut payload);
         zcl::report_level(&mut body, seq, level);
-        let Some(report) = body.written() else {
-            return;
-        };
-        self.send_aps_data(
-            nwk::COORDINATOR,
-            1,
-            zdo::ENDPOINT,
-            zdo::CLUSTER_LEVEL_CONTROL,
-            aps::PROFILE_HOME_AUTOMATION,
-            report,
-        );
+        if let Some(report) = body.written() {
+            self.report(zdo::CLUSTER_LEVEL_CONTROL, report);
+        }
     }
 
     fn honour_reporting(&mut self, now: Instant) {
@@ -1249,7 +1239,7 @@ impl Device {
             _ => return,
         };
 
-        let mut buffer = [0u8; mac::MAX_FRAME];
+        let mut buffer = [0u8; mac::MAX_FRAME_LEN];
         let mac_seq = self.next_mac_seq();
         let ieee = self.config.ieee;
         let mut out = Writer::new(&mut buffer);
@@ -1314,9 +1304,7 @@ impl Device {
         self.network_key = None;
         self.counter = 0;
         self.counter_persisted = 0;
-        self.phase = Phase::Scanning {
-            listen_until: now,
-        };
+        self.phase = Phase::Scanning { listen_until: now };
         self.emit(Event::Left);
     }
 }
@@ -1348,8 +1336,8 @@ impl Device {
         self.send_association_request(&candidate);
         self.phase = Phase::Associating {
             candidate,
-            give_up_at: Self::after(now, ASSOCIATION_TIMEOUT_MS),
-            next_poll: Self::after(now, POLL_INTERVAL_MS),
+            give_up_at: now.plus_millis(ASSOCIATION_TIMEOUT_MS),
+            next_poll: now.plus_millis(POLL_INTERVAL_MS),
         };
     }
 
@@ -1370,7 +1358,7 @@ impl Device {
             _ => nwk::COORDINATOR,
         };
         self.phase = Phase::WaitingForKey {
-            give_up_at: Self::after(now, KEY_TIMEOUT_MS),
+            give_up_at: now.plus_millis(KEY_TIMEOUT_MS),
             next_poll: now,
         };
     }
@@ -1419,7 +1407,13 @@ impl Device {
         self.on_application_frame(source, broadcast, payload, now);
     }
 
-    fn on_application_frame(&mut self, source: u16, broadcast: bool, frame: &mut [u8], now: Instant) {
+    fn on_application_frame(
+        &mut self,
+        source: u16,
+        broadcast: bool,
+        frame: &mut [u8],
+        now: Instant,
+    ) {
         let Some(parsed) = aps::parse(frame) else {
             return;
         };
@@ -1491,12 +1485,12 @@ impl Device {
             return;
         }
         if self.joined() {
-            self.next_network_key = Some((transport.key, transport.key_seq));
+            self.next_network_key = Some((transport.key, transport.key_sequence));
             return;
         }
 
         self.network_key = Some(transport.key);
-        self.key_sequence = transport.key_seq;
+        self.key_sequence = transport.key_sequence;
         self.phase = Phase::Joined;
         self.remember();
         self.announce();
@@ -1505,7 +1499,13 @@ impl Device {
         self.emit(Event::Joined { short_address });
     }
 
-    fn on_application_data(&mut self, source: u16, broadcast: bool, request: &aps::Data, now: Instant) {
+    fn on_application_data(
+        &mut self,
+        source: u16,
+        broadcast: bool,
+        request: &aps::Data,
+        now: Instant,
+    ) {
         if let Some(group) = request.group {
             if self.application.in_group(group) {
                 self.on_cluster_request(source, false, request, now);
@@ -1535,14 +1535,7 @@ impl Device {
                 let Some(body) = out.written() else {
                     return;
                 };
-                self.send_aps_data(
-                    source,
-                    0,
-                    0,
-                    response.cluster,
-                    aps::PROFILE_ZDO,
-                    body,
-                );
+                self.send_aps_data(source, 0, 0, response.cluster, aps::PROFILE_ZDO, body);
             }
             aps::PROFILE_HOME_AUTOMATION if !broadcast => {
                 self.on_cluster_request(source, true, request, now);
@@ -1555,14 +1548,8 @@ impl Device {
     }
 
     /// Runs one cluster command. A group frame reaches every member at once, so
-    /// nobody answers it and `answer` is `None`.
-    fn on_cluster_request(
-        &mut self,
-        source: u16,
-        answer: bool,
-        request: &aps::Data,
-        now: Instant,
-    ) {
+    /// nobody answers it.
+    fn on_cluster_request(&mut self, source: u16, answer: bool, request: &aps::Data, now: Instant) {
         if request.cluster == ota::CLUSTER {
             self.on_firmware_frame(source, request.payload, now);
             return;

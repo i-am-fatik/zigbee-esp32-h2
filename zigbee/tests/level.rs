@@ -25,7 +25,12 @@ fn ramp(id: u8, direction: u8, rate: u8) -> Vec<u8> {
 }
 
 fn step(id: u8, direction: u8, size: u8) -> Vec<u8> {
-    command(CLUSTER_LEVEL_CONTROL, 0x62, id, &[direction, size, 0x00, 0x00])
+    command(
+        CLUSTER_LEVEL_CONTROL,
+        0x62,
+        id,
+        &[direction, size, 0x00, 0x00],
+    )
 }
 
 fn halt() -> Vec<u8> {
@@ -105,7 +110,11 @@ fn an_undefined_level_is_clamped_to_the_brightest() {
     let mut device = device();
     device.receive(&slider(MOVE_TO_LEVEL, 0xff), at(0));
 
-    assert_eq!(device.level(), MAX_LEVEL, "0xff means undefined, not brighter");
+    assert_eq!(
+        device.level(),
+        MAX_LEVEL,
+        "0xff means undefined, not brighter"
+    );
 }
 
 #[test]
@@ -114,7 +123,11 @@ fn the_level_survives_being_switched_off() {
     device.receive(&slider(MOVE_TO_LEVEL_WITH_ON_OFF, 60), at(0));
     device.set_on_off(false);
 
-    assert_eq!(device.level(), 60, "a dark light still knows how bright it was");
+    assert_eq!(
+        device.level(),
+        60,
+        "a dark light still knows how bright it was"
+    );
 }
 
 #[test]

@@ -59,7 +59,7 @@ pub fn build_secured(
     out: &mut Writer,
     header: Header,
     key: &[u8; KEY_LEN],
-    key_seq: u8,
+    key_sequence: u8,
     counter: u32,
     source_ieee: u64,
     payload: &[u8],
@@ -84,7 +84,7 @@ pub fn build_secured(
     out.u8(security_control);
     out.u32(counter);
     out.u64(source_ieee);
-    out.u8(key_seq);
+    out.u8(key_sequence);
 
     let mut authenticated = [0u8; 64];
     let authenticated_len = out.len() - start;
@@ -195,7 +195,7 @@ pub fn unsecure(frame: &mut [u8], aux_start: usize, key: &[u8; KEY_LEN]) -> Opti
     let source = r.u64()?;
 
     let authenticated_len = aux_start + AUX_LEN;
-    let mut authenticated = [0u8; crate::mac::MAX_FRAME];
+    let mut authenticated = [0u8; crate::mac::MAX_FRAME_LEN];
     authenticated[..authenticated_len].copy_from_slice(&frame[..authenticated_len]);
     authenticated[aux_start] = security_control;
 

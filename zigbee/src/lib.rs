@@ -132,6 +132,10 @@ impl Instant {
 /// The channels Zigbee uses within the 2.4 GHz IEEE 802.15.4 band.
 pub const CHANNELS: core::ops::RangeInclusive<u8> = 11..=26;
 
+/// The largest frame IEEE 802.15.4 carries, which is the size a receive buffer
+/// has to be for [`Device::receive`] to be handed everything the radio hears.
+pub const MAX_FRAME_LEN: usize = mac::MAX_FRAME_LEN;
+
 /// What a coordinator finds when it interviews the device.
 ///
 /// This is the same description the stack puts in its simple descriptor, so a
@@ -165,17 +169,6 @@ pub const APPLICATION: Application = Application {
 /// is reserved for "undefined", so the usable range stops one short of it.
 pub const MAX_LEVEL: u8 = zcl::MAX_LEVEL;
 
-/// The install code as it is printed on a device: the sixteen secret octets
-/// followed by the checksum a coordinator expects after them.
-///
-/// This is what goes into the coordinator out of band, by hand or by QR code,
-/// before a device configured with [`Config::with_install_code`] will join.
-pub fn install_code_label(
-    code: &[u8; crypto::INSTALL_CODE_LEN],
-) -> [u8; crypto::INSTALL_CODE_LABEL_LEN] {
-    crypto::install_code_label(code)
-}
-
 /// The furthest round the colour wheel a hue goes before it comes back to
 /// where it started.
 pub const MAX_HUE: u8 = zcl::MAX_HUE;
@@ -188,19 +181,35 @@ pub const MAX_SATURATION: u8 = zcl::MAX_SATURATION;
 pub const COLOUR_TEMPERATURE_MIREDS: core::ops::RangeInclusive<u16> =
     zcl::COOLEST_MIREDS..=zcl::WARMEST_MIREDS;
 
+/// The number of octets in an install code.
+pub const INSTALL_CODE_LEN: usize = crypto::INSTALL_CODE_LEN;
+
+/// The number of octets in the printed form of one, which is the code and the
+/// checksum that follows it.
+pub const INSTALL_CODE_LABEL_LEN: usize = crypto::INSTALL_CODE_LABEL_LEN;
+
 /// The Basic cluster, which every device serves and no extend describes.
 pub const CLUSTER_BASIC: u16 = zdo::CLUSTER_BASIC;
-/// The Identify cluster.
+/// The Identify cluster, which makes the light announce which one it is.
 pub const CLUSTER_IDENTIFY: u16 = zdo::CLUSTER_IDENTIFY;
 /// The Groups cluster, which is how one command reaches many lights.
 pub const CLUSTER_GROUPS: u16 = zdo::CLUSTER_GROUPS;
 /// The Scenes cluster, which remembers a setting and puts it back.
 pub const CLUSTER_SCENES: u16 = zdo::CLUSTER_SCENES;
-/// The On/Off cluster.
+/// The On/Off cluster, which switches the light and reports every change.
 pub const CLUSTER_ON_OFF: u16 = zdo::CLUSTER_ON_OFF;
 /// The Level Control cluster, which carries the brightness.
 pub const CLUSTER_LEVEL_CONTROL: u16 = zdo::CLUSTER_LEVEL_CONTROL;
-/// The Colour Control cluster.
+/// The Colour Control cluster, which carries a hue and a saturation or a white.
 pub const CLUSTER_COLOUR_CONTROL: u16 = zdo::CLUSTER_COLOUR_CONTROL;
 /// The Over-the-Air Upgrade cluster, which the light is a client of.
 pub const CLUSTER_OTA: u16 = ota::CLUSTER;
+
+/// The install code as it is printed on a device: the sixteen secret octets
+/// followed by the checksum a coordinator expects after them.
+///
+/// This is what goes into the coordinator out of band, by hand or by QR code,
+/// before a device configured with [`Config::with_install_code`] will join.
+pub fn install_code_label(code: &[u8; INSTALL_CODE_LEN]) -> [u8; INSTALL_CODE_LABEL_LEN] {
+    crypto::install_code_label(code)
+}

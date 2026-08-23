@@ -4,15 +4,13 @@ use esp_bootloader_esp_idf::ota_updater::OtaUpdater;
 use esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN;
 use esp_hal::peripherals::FLASH;
 use esp_storage::FlashStorage;
-use zigbee::{Credentials, Tables};
+use zigbee::{Credentials, Tables, INSTALL_CODE_LEN};
 
-/// The data partition espflash lays down at 0x9000. Reflashing the application
-/// leaves it alone, so a device keeps its network membership across updates.
-/// The two records get a sector each, because they change at different times.
+/// The data partition espflash lays down, which reflashing the application
+/// leaves alone, so a device keeps what it knows across updates.
 const CREDENTIALS: u32 = 0x9000;
 const TABLES: u32 = 0xa000;
 const INSTALL_CODE: u32 = 0xb000;
-const INSTALL_CODE_LEN: usize = 16;
 const SECTOR: u32 = 4096;
 const WORD: u32 = 4;
 
@@ -37,11 +35,11 @@ impl Store {
         }
     }
 
-    pub fn load(&mut self) -> Option<Credentials> {
+    pub fn load_credentials(&mut self) -> Option<Credentials> {
         Credentials::from_bytes(&self.read(CREDENTIALS)?)
     }
 
-    pub fn save(&mut self, credentials: &Credentials) -> bool {
+    pub fn save_credentials(&mut self, credentials: &Credentials) -> bool {
         self.write(CREDENTIALS, &credentials.to_bytes())
     }
 
@@ -55,14 +53,14 @@ impl Store {
 
     /// Leaving a network makes both records meaningless, because the groups and
     /// the scenes belonged to the coordinator that is being left behind.
-    pub fn forget(&mut self) {
+    pub fn forget_network(&mut self) {
         let _ = self.flash.erase(CREDENTIALS, CREDENTIALS + SECTOR);
         let _ = self.flash.erase(TABLES, TABLES + SECTOR);
     }
 
     /// The install code this device was given when it was provisioned.
     ///
-    /// It is never written from here and [`Store::forget`] leaves it alone,
+    /// It is never written from here and [`Store::forget_network`] leaves it alone,
     /// because it belongs to the device rather than to any one network. Erased
     /// flash reads back as no code, which is a device that joins the old way.
     pub fn load_install_code(&mut self) -> Option<[u8; INSTALL_CODE_LEN]> {
@@ -110,6 +108,7 @@ impl Store {
             && updater.set_current_ota_state(OtaImageState::Valid).is_ok()
     }
 
+    /// Gives up on an update, so nothing half written can be pointed at.
     pub fn abandon_firmware(&mut self) {
         self.healthy = false;
         self.filled = 0;

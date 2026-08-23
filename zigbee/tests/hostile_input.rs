@@ -30,7 +30,10 @@ fn nonsense_of_every_length_is_survivable() {
 #[test]
 fn a_well_formed_frame_with_a_mangled_tail_is_survivable() {
     let mut seed = 7;
-    let template = deliver(&application_frame(CLUSTER_BASIC, &[0x00, 0x01, 0x00, 0x05, 0x00]));
+    let template = deliver(&application_frame(
+        CLUSTER_BASIC,
+        &[0x00, 0x01, 0x00, 0x05, 0x00],
+    ));
     for cut in 0..template.len() {
         for _round in 0..30 {
             let mut frame = template[..cut].to_vec();

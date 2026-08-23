@@ -157,7 +157,7 @@ pub fn unsecure(frame: &mut [u8], aux_start: usize, key: &[u8; KEY_LEN]) -> Opti
     let aux_len = frame[aux_start..].len() - r.remaining();
 
     let authenticated_len = aux_start + aux_len;
-    let mut authenticated = [0u8; crate::mac::MAX_FRAME];
+    let mut authenticated = [0u8; crate::mac::MAX_FRAME_LEN];
     authenticated[..authenticated_len].copy_from_slice(&frame[..authenticated_len]);
     authenticated[aux_start] = security_control;
 
@@ -188,7 +188,7 @@ pub fn unsecure(frame: &mut [u8], aux_start: usize, key: &[u8; KEY_LEN]) -> Opti
 pub struct TransportKey {
     pub key_type: u8,
     pub key: [u8; KEY_LEN],
-    pub key_seq: u8,
+    pub key_sequence: u8,
     pub destination: u64,
 }
 
@@ -199,7 +199,7 @@ pub fn parse_transport_key(body: &[u8]) -> Option<TransportKey> {
     }
     let key_type = r.u8()?;
     let key = r.array::<KEY_LEN>()?;
-    let key_seq = if key_type == KEY_TYPE_STANDARD_NETWORK {
+    let key_sequence = if key_type == KEY_TYPE_STANDARD_NETWORK {
         r.u8()?
     } else {
         0
@@ -207,7 +207,7 @@ pub fn parse_transport_key(body: &[u8]) -> Option<TransportKey> {
     Some(TransportKey {
         key_type,
         key,
-        key_seq,
+        key_sequence,
         destination: r.u64()?,
     })
 }

@@ -12,7 +12,7 @@ pub const UPGRADE_END_REQUEST: u8 = 0x06;
 pub const UPGRADE_END_RESPONSE: u8 = 0x07;
 
 const STATUS_SUCCESS: u8 = 0x00;
-const STATUS_ABORT: u8 = 0x95;
+pub const STATUS_ABORT: u8 = 0x95;
 const STATUS_WAIT_FOR_DATA: u8 = 0x97;
 
 /// The most image bytes that fit beside a block response's own header in one
@@ -261,41 +261,47 @@ impl State {
         Outcome::Nothing
     }
 
-    /// Splits an arriving block into the part that is still upgrade header and
-    /// the part that is firmware, and hands only the second to the caller.
     fn absorb(&mut self, offset: u32, data: &[u8], block: &mut Block) {
-        if self.image_at.is_none() {
-            let room = PREAMBLE - self.preamble_len;
-            let keep = data.len().min(room);
-            self.preamble[self.preamble_len..self.preamble_len + keep]
-                .copy_from_slice(&data[..keep]);
-            self.preamble_len += keep;
-
-            let Some(start) = image_start(&self.preamble[..self.preamble_len]) else {
-                return;
-            };
-            self.image_at = Some(start.at);
-            self.image_size = start.size;
-
-            let from = start.at as usize;
-            if from < self.preamble_len {
-                block.put(0, &self.preamble[from..self.preamble_len]);
-                self.taken = (self.preamble_len - from) as u32;
-            }
-            return;
+        match self.image_at {
+            None => self.absorb_preamble(data, block),
+            Some(image_at) => self.absorb_image(image_at, offset, data, block),
         }
+    }
 
-        let Some(image_at) = self.image_at else {
+    /// Collects the front of the file until it says where the firmware starts,
+    /// then hands over whatever of the firmware was already collected with it.
+    fn absorb_preamble(&mut self, data: &[u8], block: &mut Block) {
+        let room = PREAMBLE - self.preamble_len;
+        let keep = data.len().min(room);
+        self.preamble[self.preamble_len..self.preamble_len + keep].copy_from_slice(&data[..keep]);
+        self.preamble_len += keep;
+
+        let Some(start) = image_start(&self.preamble[..self.preamble_len]) else {
             return;
         };
+        self.image_at = Some(start.at);
+        self.image_size = start.size;
+
+        let from = start.at as usize;
+        if from < self.preamble_len {
+            block.put(0, &self.preamble[from..self.preamble_len]);
+            self.taken = (self.preamble_len - from) as u32;
+        }
+    }
+
+    /// Hands over the part of a block that falls inside the firmware, which is
+    /// all of it once the file header is behind us.
+    fn absorb_image(&mut self, image_at: u32, offset: u32, data: &[u8], block: &mut Block) {
         let end = image_at + self.image_size;
         let from = offset.max(image_at);
         let to = (offset + data.len() as u32).min(end);
         if to <= from {
             return;
         }
-        let slice = &data[(from - offset) as usize..(to - offset) as usize];
-        block.put(from - image_at, slice);
+        block.put(
+            from - image_at,
+            &data[(from - offset) as usize..(to - offset) as usize],
+        );
         self.taken = to - image_at;
     }
 }
@@ -362,8 +368,4 @@ fn header(out: &mut Writer, seq: u8, command: u8) {
     out.u8(0x11);
     out.u8(seq);
     out.u8(command);
-}
-
-pub const fn abort() -> u8 {
-    STATUS_ABORT
 }
