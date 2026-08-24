@@ -216,3 +216,56 @@ pub fn respond(
         cluster: cluster | RESPONSE_BIT,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SHORT: u16 = 0x4560;
+    const IEEE: u64 = 0x0011_2233_4455_6677;
+    const CAPABILITY: u8 = 0x8c;
+
+    fn ask(cluster: u16, request: &[u8]) -> (u16, Vec<u8>) {
+        let mut buffer = [0u8; 96];
+        let mut out = Writer::new(&mut buffer);
+        let response = respond(&mut out, cluster, request, SHORT, IEEE, CAPABILITY, false)
+            .expect("a coordinator asked and is owed an answer");
+        let len = out.len();
+        (response.cluster, buffer[..len].to_vec())
+    }
+
+    #[test]
+    fn the_active_endpoints_are_the_one_the_light_answers_on() {
+        let (cluster, reply) = ask(ACTIVE_EP_REQ, &[0x42, 0x60, 0x45]);
+
+        assert_eq!(cluster, ACTIVE_EP_REQ | RESPONSE_BIT);
+        assert_eq!(reply, vec![0x42, STATUS_SUCCESS, 0x60, 0x45, 1, ENDPOINT]);
+    }
+
+    #[test]
+    fn the_simple_descriptor_describes_a_colour_light() {
+        let (cluster, reply) = ask(SIMPLE_DESC_REQ, &[0x43, 0x60, 0x45, ENDPOINT]);
+
+        assert_eq!(cluster, SIMPLE_DESC_REQ | RESPONSE_BIT);
+        assert_eq!(reply[0], 0x43);
+        assert_eq!(reply[1], STATUS_SUCCESS);
+        assert_eq!(reply[4] as usize, reply.len() - 5);
+        assert_eq!(reply[5], ENDPOINT);
+        assert_eq!(
+            u16::from_le_bytes([reply[8], reply[9]]),
+            DEVICE_ID_COLOUR_LIGHT
+        );
+        assert_eq!(reply[11] as usize, INPUT_CLUSTERS.len());
+        assert_eq!(
+            reply[12 + 2 * INPUT_CLUSTERS.len()] as usize,
+            OUTPUT_CLUSTERS.len()
+        );
+    }
+
+    #[test]
+    fn a_descriptor_for_an_endpoint_the_light_has_not_got_is_refused() {
+        let (_, reply) = ask(SIMPLE_DESC_REQ, &[0x44, 0x60, 0x45, 9]);
+
+        assert_ne!(reply[1], STATUS_SUCCESS);
+    }
+}
