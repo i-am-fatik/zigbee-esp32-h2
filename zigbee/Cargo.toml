@@ -1,10 +1,11 @@
 [package]
 name = "zigbee-rs"
-version = "0.1.0"
+version = "0.1.1"
 description = "A sans-io Zigbee end device stack for no_std targets"
 categories = ["embedded", "network-programming", "no-std"]
 keywords = ["zigbee", "ieee802154", "embedded", "no-std"]
 repository = "https://github.com/i-am-fatik/zigbee-esp32-h2"
+documentation = "https://docs.rs/zigbee-rs"
 readme = "README.md"
 rust-version = "1.85"
 edition = "2021"
