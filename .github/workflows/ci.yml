@@ -65,3 +65,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-semver-checks
       - run: cargo semver-checks -p zigbee-rs --target x86_64-unknown-linux-gnu
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit --deny warnings --ignore RUSTSEC-2024-0436
