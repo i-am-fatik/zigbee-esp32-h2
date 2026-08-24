@@ -1048,7 +1048,7 @@ impl Device {
         profile: u16,
         payload: &[u8],
     ) {
-        let mut frame = [0u8; 96];
+        let mut frame = [0u8; nwk::MAX_PAYLOAD_LEN];
         let counter = self.next_aps_counter();
         let mut out = Writer::new(&mut frame);
         aps::build_data(
@@ -1519,7 +1519,7 @@ impl Device {
 
         match request.profile {
             aps::PROFILE_ZDO => {
-                let mut reply = [0u8; 96];
+                let mut reply = [0u8; aps::MAX_PAYLOAD_LEN];
                 let mut out = Writer::new(&mut reply);
                 let Some(response) = zdo::respond(
                     &mut out,
@@ -1555,7 +1555,7 @@ impl Device {
             return;
         }
 
-        let mut reply = [0u8; 96];
+        let mut reply = [0u8; aps::MAX_PAYLOAD_LEN];
         let mut out = Writer::new(&mut reply);
         let identity = zcl::Identity {
             manufacturer: self.config.manufacturer,

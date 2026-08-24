@@ -29,6 +29,9 @@ const KEY_ID_NETWORK: u8 = 1 << 3;
 const EXTENDED_NONCE: u8 = 1 << 5;
 
 const AUX_LEN: usize = 1 + 4 + 8 + 1;
+const HEADER_LEN: usize = 2 + 2 + 2 + 1 + 1;
+pub const MAX_PAYLOAD_LEN: usize =
+    crate::mac::MAX_PAYLOAD_LEN - HEADER_LEN - AUX_LEN - crate::crypto::MIC_LEN;
 
 pub struct Header {
     pub frame_type: u16,
@@ -93,7 +96,7 @@ pub fn build_secured(
     };
     authenticated[..authenticated_len].copy_from_slice(&written[start..]);
 
-    let mut body = [0u8; 96];
+    let mut body = [0u8; MAX_PAYLOAD_LEN];
     body[..payload.len()].copy_from_slice(payload);
     let body = &mut body[..payload.len()];
 

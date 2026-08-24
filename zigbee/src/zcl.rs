@@ -719,11 +719,16 @@ pub fn handle(
             header(out, false, request.seq, CMD_READ_ATTRIBUTES_RESPONSE);
             let mut r = Reader::new(request.payload);
             while let Some(attribute) = r.u16() {
+                let record_at = out.len();
                 out.u16(attribute);
                 let status_at = out.len();
                 out.u8(STATUS_SUCCESS);
                 if !write_attribute(out, cluster, attribute, state, identity, now) {
                     out.set(status_at, STATUS_UNSUPPORTED_ATTRIBUTE);
+                }
+                if out.overflowed() {
+                    out.truncate(record_at);
+                    break;
                 }
             }
             replied(Changed::NONE)
@@ -1607,5 +1612,50 @@ mod tests {
         assert_eq!(reply[5], STATUS_SUCCESS);
         assert_eq!(reply[6], TYPE_UINT16);
         assert_eq!(u16::from_le_bytes([reply[7], reply[8]]), 40);
+    }
+    #[test]
+    fn a_command_that_wanted_an_answer_gets_the_default_response() {
+        let mut state = State::default();
+        let off = vec![0x01, 0x42, ON_OFF_OFF];
+        let (outcome, reply) = run(CLUSTER_ON_OFF, &off, &mut state, 0);
+
+        assert!(outcome.has_reply);
+        assert_eq!(
+            reply,
+            vec![
+                FC_FROM_SERVER | FC_DISABLE_DEFAULT_RESPONSE,
+                0x42,
+                CMD_DEFAULT_RESPONSE,
+                ON_OFF_OFF,
+                STATUS_SUCCESS
+            ]
+        );
+    }
+
+    #[test]
+    fn a_command_that_refused_an_answer_gets_none() {
+        let mut state = State::default();
+        let off = vec![0x01 | FC_DISABLE_DEFAULT_RESPONSE, 0x43, ON_OFF_OFF];
+        let (outcome, _) = run(CLUSTER_ON_OFF, &off, &mut state, 0);
+
+        assert!(!outcome.has_reply);
+    }
+
+    #[test]
+    fn a_command_that_failed_answers_even_when_an_answer_was_refused() {
+        let mut state = State::default();
+        let truncated = vec![
+            0x01 | FC_DISABLE_DEFAULT_RESPONSE,
+            0x44,
+            LEVEL_MOVE_TO_LEVEL,
+        ];
+        let (outcome, reply) = run(CLUSTER_LEVEL_CONTROL, &truncated, &mut state, 0);
+
+        assert!(
+            outcome.has_reply,
+            "a failure is reported whatever was asked"
+        );
+        assert_eq!(reply[2], CMD_DEFAULT_RESPONSE);
+        assert_eq!(reply[4], STATUS_INVALID_FIELD);
     }
 }

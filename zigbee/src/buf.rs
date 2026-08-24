@@ -125,7 +125,12 @@ impl<'a> Writer<'a> {
         }
     }
 
+    pub fn overflowed(&self) -> bool {
+        self.ran_out
+    }
+
     pub fn truncate(&mut self, pos: usize) {
         self.pos = pos;
+        self.ran_out = false;
     }
 }

@@ -16,6 +16,9 @@ pub const KEY_TYPE_STANDARD_NETWORK: u8 = 0x01;
 pub const PROFILE_ZDO: u16 = 0x0000;
 pub const PROFILE_HOME_AUTOMATION: u16 = 0x0104;
 
+pub const DATA_HEADER_LEN: usize = 1 + 1 + 2 + 2 + 1 + 1;
+pub const MAX_PAYLOAD_LEN: usize = crate::nwk::MAX_PAYLOAD_LEN - DATA_HEADER_LEN;
+
 const FC_SECURITY: u8 = 1 << 5;
 const FC_ACK_REQUEST: u8 = 1 << 6;
 const FC_EXTENDED_HEADER: u8 = 1 << 7;

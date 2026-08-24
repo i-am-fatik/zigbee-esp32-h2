@@ -4,8 +4,8 @@
 
 mod common;
 
-use common::{application_frame, at, deliver, device, drain};
-use zigbee::CLUSTER_BASIC;
+use common::{application_frame, at, deliver, device, drain, joined_device, transmissions};
+use zigbee::{CLUSTER_BASIC, MAX_FRAME_LEN};
 
 fn next(seed: &mut u32) -> u8 {
     *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -64,4 +64,28 @@ fn a_reply_larger_than_the_frame_it_answers_is_survivable() {
         device.tick(at(1));
         drain(&mut device);
     }
+}
+
+#[test]
+fn a_reply_too_big_for_one_frame_is_cut_down_rather_than_dropped() {
+    let mut read = vec![0x00, 0x01, 0x00];
+    for attribute in 0..40u16 {
+        read.extend_from_slice(&attribute.to_le_bytes());
+    }
+    let request = deliver(&application_frame(CLUSTER_BASIC, &read));
+    assert!(
+        request.len() <= MAX_FRAME_LEN,
+        "the ask has to be legal too"
+    );
+
+    let mut device = joined_device();
+    device.receive(&request, at(100));
+
+    let replies = transmissions(&mut device);
+    assert_eq!(replies.len(), 1, "silence reads as a dead device");
+    assert_eq!(
+        replies[0].len(),
+        MAX_FRAME_LEN,
+        "the reply fills the frame it is allowed and stops"
+    );
 }
