@@ -17,6 +17,7 @@ pub const CMD_DISCOVER_ATTRIBUTES: u8 = 0x0c;
 pub const CMD_DISCOVER_ATTRIBUTES_RESPONSE: u8 = 0x0d;
 
 pub const IDENTIFY: u8 = 0x00;
+pub const TRIGGER_EFFECT: u8 = 0x40;
 pub const IDENTIFY_QUERY: u8 = 0x01;
 pub const IDENTIFY_QUERY_RESPONSE: u8 = 0x00;
 pub const ATTR_IDENTIFY_TIME: u16 = 0x0000;
@@ -79,6 +80,7 @@ pub const MAX_LEVEL: u8 = 0xfe;
 const RATE_UNSTATED: u8 = 0xff;
 
 pub const COLOUR_MOVE_TO_HUE: u8 = 0x00;
+pub const COLOUR_MOVE_HUE: u8 = 0x01;
 pub const COLOUR_STEP_HUE: u8 = 0x02;
 pub const COLOUR_MOVE_TO_SATURATION: u8 = 0x03;
 pub const COLOUR_STEP_SATURATION: u8 = 0x05;
@@ -102,8 +104,20 @@ pub const COLOUR_MODE_HUE_SATURATION: u8 = 0x00;
 pub const COLOUR_MODE_XY: u8 = 0x01;
 pub const COLOUR_MODE_TEMPERATURE: u8 = 0x02;
 
+const COLOUR_HOLD: u8 = 0x00;
 const COLOUR_UP: u8 = 0x01;
 const COLOUR_DOWN: u8 = 0x03;
+
+const EFFECT_BLINK: u8 = 0x00;
+const EFFECT_BREATHE: u8 = 0x01;
+const EFFECT_OKAY: u8 = 0x02;
+const EFFECT_CHANNEL_CHANGE: u8 = 0x0b;
+const EFFECT_STOP: u8 = 0xff;
+
+const BLINK_SECONDS: u16 = 1;
+const OKAY_SECONDS: u16 = 2;
+const CHANNEL_CHANGE_SECONDS: u16 = 8;
+const BREATHE_SECONDS: u16 = 15;
 
 pub const MAX_HUE: u8 = 0xfe;
 pub const MAX_SATURATION: u8 = 0xfe;
@@ -362,6 +376,27 @@ impl Changed {
     };
 }
 
+impl core::ops::BitOr for Changed {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self {
+            on_off: self.on_off || other.on_off,
+            level: self.level || other.level,
+            colour: self.colour || other.colour,
+            tables: self.tables || other.tables,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Wheel {
+    up: bool,
+    rate: u8,
+    started_at: Instant,
+    from: u8,
+}
+
 /// A brightness move already under way, held as its starting point rather than
 /// its current one so repeated ticks cannot accumulate rounding error.
 #[derive(Clone, Copy)]
@@ -400,6 +435,7 @@ pub struct State {
     pub startup_on_off: u8,
     pub startup_mireds: u16,
     pub identify_until: Option<Instant>,
+    wheel: Option<Wheel>,
     pub on_off_report: Reportable,
     pub level_report: Reportable,
     pub groups: [u16; MAX_GROUPS],
@@ -424,6 +460,7 @@ impl Default for State {
             startup_on_off: STARTUP_AS_IT_BOOTS,
             startup_mireds: STARTUP_KEEP_TEMPERATURE,
             identify_until: None,
+            wheel: None,
             on_off_report: Reportable::default(),
             level_report: Reportable::default(),
             groups: [NO_GROUP; MAX_GROUPS],
@@ -505,6 +542,36 @@ impl State {
     /// Abandons any move under way, leaving the brightness where it reached.
     pub fn stop(&mut self) {
         self.ramp = None;
+    }
+
+    fn trigger_effect(&mut self, effect: u8, now: Instant) {
+        let seconds = match effect {
+            EFFECT_BLINK => BLINK_SECONDS,
+            EFFECT_OKAY => OKAY_SECONDS,
+            EFFECT_CHANNEL_CHANGE => CHANNEL_CHANGE_SECONDS,
+            EFFECT_BREATHE => BREATHE_SECONDS,
+            EFFECT_STOP => 0,
+            _ => return,
+        };
+        self.identify_for(seconds, now);
+    }
+
+    fn turn_hue(&mut self, up: bool, rate: u8, now: Instant) -> Changed {
+        if rate == 0 {
+            self.wheel = None;
+            return Changed::NONE;
+        }
+        self.wheel = Some(Wheel {
+            up,
+            rate,
+            started_at: now,
+            from: self.hue,
+        });
+        self.set_hue_and_saturation(self.hue, self.saturation)
+    }
+
+    fn hold_hue(&mut self) {
+        self.wheel = None;
     }
 
     fn set_hue_and_saturation(&mut self, hue: u8, saturation: u8) -> Changed {
@@ -731,8 +798,9 @@ impl State {
     /// Carries a move under way forward to where it should be by now, and ends
     /// it once the brightness runs into either end of the range.
     pub fn advance(&mut self, now: Instant) -> Changed {
+        let turned = self.turned_to(now);
         let Some(ramp) = self.ramp else {
-            return Changed::NONE;
+            return turned;
         };
 
         let elapsed = now.millis_since(ramp.started_at) as u64;
@@ -746,7 +814,23 @@ impl State {
         if level == 0 || level == MAX_LEVEL {
             self.stop();
         }
-        self.settle(level, ramp.with_on_off)
+        turned | self.settle(level, ramp.with_on_off)
+    }
+
+    fn turned_to(&mut self, now: Instant) -> Changed {
+        let Some(wheel) = self.wheel else {
+            return Changed::NONE;
+        };
+
+        let steps = HUE_STEPS as u64;
+        let elapsed = now.millis_since(wheel.started_at) as u64;
+        let travelled = wheel.rate as u64 * elapsed / 1000 % steps;
+        let hue = if wheel.up {
+            (wheel.from as u64 + travelled) % steps
+        } else {
+            (wheel.from as u64 + steps - travelled) % steps
+        };
+        self.set_hue_and_saturation(hue as u8, self.saturation)
     }
 }
 
@@ -1330,12 +1414,36 @@ fn handle_cluster_command(
                 _ => STATUS_INVALID_FIELD,
             }
         }
-        (CLUSTER_COLOUR_CONTROL, COLOUR_STOP) => STATUS_SUCCESS,
+        (CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_HUE) => {
+            let mut r = Reader::new(request.payload);
+            match (r.u8(), r.u8()) {
+                (Some(COLOUR_HOLD), _) => {
+                    state.hold_hue();
+                    STATUS_SUCCESS
+                }
+                (Some(mode), Some(rate)) if matches!(mode, COLOUR_UP | COLOUR_DOWN) => {
+                    changed = state.turn_hue(mode == COLOUR_UP, rate, now);
+                    STATUS_SUCCESS
+                }
+                _ => STATUS_INVALID_FIELD,
+            }
+        }
+        (CLUSTER_COLOUR_CONTROL, COLOUR_STOP) => {
+            state.hold_hue();
+            STATUS_SUCCESS
+        }
         (CLUSTER_IDENTIFY, IDENTIFY) => {
             let seconds = Reader::new(request.payload).u16().unwrap_or(0);
             state.identify_for(seconds, now);
             STATUS_SUCCESS
         }
+        (CLUSTER_IDENTIFY, TRIGGER_EFFECT) => match Reader::new(request.payload).u8() {
+            Some(effect) => {
+                state.trigger_effect(effect, now);
+                STATUS_SUCCESS
+            }
+            None => STATUS_INVALID_FIELD,
+        },
         _ => STATUS_UNSUP_CLUSTER_COMMAND,
     };
 
@@ -1580,6 +1688,103 @@ mod tests {
             &mut state,
         );
         assert_eq!(u16::from_le_bytes([warmest[7], warmest[8]]), WARMEST_MIREDS);
+    }
+
+    fn effect(id: u8) -> Vec<u8> {
+        vec![0x01, 0x60, TRIGGER_EFFECT, id, 0x00]
+    }
+
+    #[test]
+    fn an_effect_makes_the_light_draw_attention_to_itself() {
+        let mut state = State::default();
+
+        let (outcome, _) = run(CLUSTER_IDENTIFY, &effect(EFFECT_BLINK), &mut state, 0);
+
+        assert!(outcome.has_reply);
+        assert_eq!(
+            state.identify_remaining(Instant::from_millis(0)),
+            BLINK_SECONDS
+        );
+    }
+
+    #[test]
+    fn a_longer_effect_holds_the_light_longer() {
+        let mut state = State::default();
+
+        run(CLUSTER_IDENTIFY, &effect(EFFECT_BREATHE), &mut state, 0);
+
+        assert_eq!(
+            state.identify_remaining(Instant::from_millis(0)),
+            BREATHE_SECONDS
+        );
+    }
+
+    #[test]
+    fn an_effect_that_stops_ends_the_one_running() {
+        let mut state = State::default();
+        run(
+            CLUSTER_IDENTIFY,
+            &effect(EFFECT_CHANNEL_CHANGE),
+            &mut state,
+            0,
+        );
+
+        run(CLUSTER_IDENTIFY, &effect(EFFECT_STOP), &mut state, 1_000);
+
+        assert_eq!(state.identify_remaining(Instant::from_millis(1_000)), 0);
+    }
+
+    #[test]
+    fn an_effect_asked_to_finish_leaves_the_one_running_to_run_out() {
+        let mut state = State::default();
+        run(
+            CLUSTER_IDENTIFY,
+            &effect(EFFECT_CHANNEL_CHANGE),
+            &mut state,
+            0,
+        );
+
+        run(CLUSTER_IDENTIFY, &effect(0xfe), &mut state, 1_000);
+
+        assert_eq!(state.identify_remaining(Instant::from_millis(1_000)), 7);
+    }
+
+    #[test]
+    fn a_hue_told_to_move_keeps_going_between_ticks() {
+        let mut state = State::default();
+        let move_up = vec![0x01, 0x61, COLOUR_MOVE_HUE, COLOUR_UP, 50];
+
+        run(CLUSTER_COLOUR_CONTROL, &move_up, &mut state, 0);
+        let changed = state.advance(Instant::from_millis(2_000));
+
+        assert!(changed.colour);
+        assert_eq!(state.hue, 100);
+        assert_eq!(state.colour_mode, COLOUR_MODE_HUE_SATURATION);
+    }
+
+    #[test]
+    fn a_hue_that_ran_off_the_end_comes_back_on_the_other() {
+        let mut state = State::default();
+        let move_up = vec![0x01, 0x62, COLOUR_MOVE_HUE, COLOUR_UP, 100];
+
+        run(CLUSTER_COLOUR_CONTROL, &move_up, &mut state, 0);
+        state.advance(Instant::from_millis(3_000));
+
+        assert_eq!(state.hue, 45, "300 steps around a wheel of 255");
+    }
+
+    #[test]
+    fn a_hue_told_to_hold_stops_where_it_is() {
+        let mut state = State::default();
+        let move_up = vec![0x01, 0x63, COLOUR_MOVE_HUE, COLOUR_UP, 50];
+        run(CLUSTER_COLOUR_CONTROL, &move_up, &mut state, 0);
+        state.advance(Instant::from_millis(2_000));
+
+        let hold = vec![0x01, 0x64, COLOUR_MOVE_HUE, COLOUR_HOLD, 0];
+        run(CLUSTER_COLOUR_CONTROL, &hold, &mut state, 2_000);
+        state.advance(Instant::from_millis(6_000));
+
+        assert_eq!(state.hue, 100, "it stayed where the hold caught it");
     }
 
     #[test]
