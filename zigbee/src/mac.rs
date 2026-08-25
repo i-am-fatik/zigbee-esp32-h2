@@ -155,6 +155,9 @@ pub struct Beacon {
     pub association_permit: bool,
     pub stack_profile: u8,
     pub end_device_capacity: bool,
+    /// How many hops the sender sits from the coordinator, which is itself at
+    /// zero. A shallower parent is a shorter path for every frame that follows.
+    pub depth: u8,
 }
 
 pub fn parse_beacon(frame: &Frame) -> Option<Beacon> {
@@ -181,6 +184,7 @@ pub fn parse_beacon(frame: &Frame) -> Option<Beacon> {
         association_permit: superframe & (1 << 15) != 0,
         stack_profile: profile_and_version & 0x0f,
         end_device_capacity: capacity & 0x80 != 0,
+        depth: (capacity >> 3) & 0x0f,
     })
 }
 

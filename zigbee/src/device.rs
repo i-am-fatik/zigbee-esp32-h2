@@ -35,6 +35,10 @@ const COUNTER_MARGIN: u32 = 1024;
 
 const COORDINATOR_ENDPOINT: u8 = 1;
 
+/// What a caller that cannot measure link quality reports, which is the worst
+/// a radio could have reported, so a real measurement always wins.
+const UNKNOWN_QUALITY: u8 = 0;
+
 const UNASSIGNED: u16 = 0xffff;
 const OUTBOX_CAPACITY: usize = 4;
 const EVENT_CAPACITY: usize = 4;
@@ -225,6 +229,12 @@ impl Credentials {
     /// The channel the network runs on.
     pub const fn channel(&self) -> u8 {
         self.channel
+    }
+
+    /// The router the device joined through, which is the coordinator itself
+    /// when the device is one of its own children.
+    pub const fn parent(&self) -> u16 {
+        self.parent
     }
 }
 
@@ -458,6 +468,7 @@ pub enum Event {
 enum Phase {
     Scanning {
         listen_until: Instant,
+        best: Option<Candidate>,
     },
     Associating {
         candidate: Candidate,
@@ -474,6 +485,7 @@ enum Phase {
     Rejoining {
         give_up_at: Instant,
         next_attempt: Instant,
+        asked: Option<u8>,
     },
     Joined,
 }
@@ -483,6 +495,17 @@ struct Candidate {
     channel: u8,
     pan_id: u16,
     parent: mac::Addr,
+    depth: u8,
+    lqi: u8,
+}
+
+impl Candidate {
+    /// Whether this parent is worth leaving the held one for. Link quality
+    /// decides, because a parent that is one hop closer is no use if half of
+    /// what it sends never lands; hop count only breaks a tie.
+    fn beats(&self, held: &Candidate) -> bool {
+        (self.lqi, held.depth) > (held.lqi, self.depth)
+    }
 }
 
 struct Queue<T, const N: usize> {
@@ -580,6 +603,7 @@ impl Device {
             next_network_key: None,
             phase: Phase::Scanning {
                 listen_until: Instant::from_millis(0),
+                best: None,
             },
             application: zcl::State::default(),
             transport_key: key_transport_key(&link_key(&config)),
@@ -650,8 +674,12 @@ impl Device {
         }
 
         match self.phase {
-            Phase::Scanning { listen_until } => {
+            Phase::Scanning { listen_until, best } => {
                 if !now.reached(listen_until) {
+                    return;
+                }
+                if let Some(candidate) = best {
+                    self.associate_with(candidate, now);
                     return;
                 }
                 self.radio.channel = if self.radio.channel >= *CHANNELS.end() {
@@ -662,6 +690,7 @@ impl Device {
                 self.send_beacon_request();
                 self.phase = Phase::Scanning {
                     listen_until: now.plus_millis(SCAN_DWELL_MS),
+                    best: None,
                 };
             }
             Phase::Associating {
@@ -702,6 +731,7 @@ impl Device {
             Phase::Rejoining {
                 give_up_at,
                 next_attempt,
+                ..
             } => {
                 if now.reached(give_up_at) {
                     self.restart_scan(now);
@@ -712,6 +742,7 @@ impl Device {
                     self.phase = Phase::Rejoining {
                         give_up_at,
                         next_attempt: now.plus_millis(REJOIN_RETRY_MS),
+                        asked: None,
                     };
                 }
             }
@@ -721,7 +752,19 @@ impl Device {
 
     /// Hands the stack a MAC frame the radio received, without the physical
     /// length byte and without the checksum.
+    ///
+    /// A radio that cannot report link quality can use this; the device then
+    /// chooses a parent on hop count alone. Prefer
+    /// [`Device::receive_with_quality`] where the number is available, because
+    /// the nearest parent is not always the one heard best.
     pub fn receive(&mut self, frame: &[u8], now: Instant) {
+        self.receive_with_quality(frame, UNKNOWN_QUALITY, now);
+    }
+
+    /// Hands the stack a MAC frame together with the link quality the radio
+    /// measured on it, which is how a joining device tells a parent it can
+    /// barely hear from one it can.
+    pub fn receive_with_quality(&mut self, frame: &[u8], lqi: u8, now: Instant) {
         if frame.len() > mac::MAX_FRAME_LEN {
             return;
         }
@@ -732,7 +775,7 @@ impl Device {
         match parsed.frame_type {
             mac::FRAME_TYPE_BEACON => {
                 if let Some(beacon) = mac::parse_beacon(&parsed) {
-                    self.on_beacon(beacon, now);
+                    self.on_beacon(beacon, lqi);
                 }
             }
             mac::FRAME_TYPE_COMMAND => {
@@ -1249,6 +1292,7 @@ impl Device {
         self.phase = Phase::Rejoining {
             give_up_at: now.plus_millis(REJOIN_TIMEOUT_MS),
             next_attempt: now,
+            asked: None,
         };
     }
 
@@ -1326,22 +1370,39 @@ impl Device {
         self.network_key = None;
         self.counter = 0;
         self.counter_persisted = 0;
-        self.phase = Phase::Scanning { listen_until: now };
+        self.phase = Phase::Scanning {
+            listen_until: now,
+            best: None,
+        };
         self.emit(Event::Left);
     }
 }
 
 impl Device {
-    fn on_beacon(&mut self, beacon: mac::Beacon, now: Instant) {
-        if matches!(self.phase, Phase::Rejoining { .. }) {
-            if beacon.pan_id == self.radio.pan_id && beacon.end_device_capacity {
-                self.send_rejoin_request(beacon.source);
+    fn on_beacon(&mut self, beacon: mac::Beacon, lqi: u8) {
+        if let Phase::Rejoining {
+            give_up_at,
+            next_attempt,
+            asked,
+        } = self.phase
+        {
+            if beacon.pan_id != self.radio.pan_id || !beacon.end_device_capacity {
+                return;
             }
+            if asked.is_some_and(|heard_better| lqi <= heard_better) {
+                return;
+            }
+            self.send_rejoin_request(beacon.source);
+            self.phase = Phase::Rejoining {
+                give_up_at,
+                next_attempt,
+                asked: Some(lqi),
+            };
             return;
         }
-        if !matches!(self.phase, Phase::Scanning { .. }) {
+        let Phase::Scanning { listen_until, best } = self.phase else {
             return;
-        }
+        };
         if !beacon.association_permit || !beacon.end_device_capacity {
             return;
         }
@@ -1353,7 +1414,22 @@ impl Device {
             channel: self.radio.channel,
             pan_id: beacon.pan_id,
             parent: beacon.source,
+            depth: beacon.depth,
+            lqi,
         };
+        if best.is_some_and(|held| !candidate.beats(&held)) {
+            return;
+        }
+        self.phase = Phase::Scanning {
+            listen_until,
+            best: Some(candidate),
+        };
+    }
+
+    /// Takes the parent the scan settled on. Every frame the device sends or
+    /// receives from here on travels through it, so the one heard best wins
+    /// rather than the first one to answer.
+    fn associate_with(&mut self, candidate: Candidate, now: Instant) {
         self.radio.pan_id = candidate.pan_id;
         self.send_association_request(&candidate);
         self.phase = Phase::Associating {

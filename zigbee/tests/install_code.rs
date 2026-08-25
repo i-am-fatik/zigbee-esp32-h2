@@ -16,7 +16,8 @@ fn joining(config: Config) -> Device {
     let mut device = Device::new(config);
     device.tick(at(0));
     device.receive(&common::beacon(true), at(10));
-    device.receive(ASSOCIATION_RESPONSE, at(20));
+    device.tick(at(260));
+    device.receive(ASSOCIATION_RESPONSE, at(270));
     drain(&mut device);
     device
 }

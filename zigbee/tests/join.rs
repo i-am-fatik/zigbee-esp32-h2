@@ -110,6 +110,11 @@ fn a_beacon_that_permits_joining_provokes_an_association_request() {
     drain(&mut device);
 
     device.receive(&beacon(true), Instant::from_millis(10));
+    assert!(
+        drain(&mut device).is_empty(),
+        "the scan hears out its dwell before it settles on a parent"
+    );
+    device.tick(Instant::from_millis(260));
 
     let frames = drain(&mut device);
     assert_eq!(frames.len(), 1, "expected exactly one association request");
@@ -120,6 +125,116 @@ fn a_beacon_that_permits_joining_provokes_an_association_request() {
         request[request.len() - 1],
         0x8c,
         "mains powered, receiver on"
+    );
+}
+
+/// The same beacon, moved to a given router at a given distance from the
+/// coordinator.
+fn beacon_at(source: u16, depth: u8) -> Vec<u8> {
+    let mut frame = beacon(true);
+    frame[5..7].copy_from_slice(&source.to_le_bytes());
+    frame[13] = 0x80 | (depth << 3);
+    frame
+}
+
+fn association_request_went_to(frame: &[u8]) -> u16 {
+    u16::from_le_bytes([frame[5], frame[6]])
+}
+
+#[test]
+fn the_scan_settles_on_the_shallowest_parent_it_heard() {
+    let mut device = device();
+    device.tick(Instant::from_millis(0));
+    drain(&mut device);
+
+    device.receive(&beacon_at(0x85ef, 2), Instant::from_millis(10));
+    device.receive(&beacon_at(0x0000, 0), Instant::from_millis(20));
+    device.tick(Instant::from_millis(260));
+
+    let frames = drain(&mut device);
+    assert_eq!(frames.len(), 1, "one association request, to one parent");
+    assert_eq!(
+        association_request_went_to(&frames[0]),
+        0x0000,
+        "a router heard first must not beat the coordinator heard second"
+    );
+}
+
+#[test]
+fn a_deeper_parent_heard_later_does_not_displace_a_shallower_one() {
+    let mut device = device();
+    device.tick(Instant::from_millis(0));
+    drain(&mut device);
+
+    device.receive(&beacon_at(0x0000, 0), Instant::from_millis(10));
+    device.receive(&beacon_at(0x85ef, 2), Instant::from_millis(20));
+    device.tick(Instant::from_millis(260));
+
+    let frames = drain(&mut device);
+    assert_eq!(frames.len(), 1, "one association request, to one parent");
+    assert_eq!(
+        association_request_went_to(&frames[0]),
+        0x0000,
+        "the shallowest parent stays chosen"
+    );
+}
+
+#[test]
+fn a_parent_heard_well_beats_a_nearer_one_barely_heard() {
+    let mut device = device();
+    device.tick(Instant::from_millis(0));
+    drain(&mut device);
+
+    device.receive_with_quality(&beacon_at(0x0000, 0), 40, Instant::from_millis(10));
+    device.receive_with_quality(&beacon_at(0x85ef, 2), 200, Instant::from_millis(20));
+    device.tick(Instant::from_millis(260));
+
+    let frames = drain(&mut device);
+    assert_eq!(frames.len(), 1, "one association request, to one parent");
+    assert_eq!(
+        association_request_went_to(&frames[0]),
+        0x85ef,
+        "a coordinator that can barely be heard makes a poor parent"
+    );
+}
+
+#[test]
+fn a_rejoin_asks_the_parent_it_hears_best_and_not_the_rest() {
+    let mut device = joined_device();
+    for tick in 0..3 {
+        device.transmission_failed(Instant::from_millis(1_000 + tick));
+    }
+    device.tick(Instant::from_millis(1_100));
+    drain(&mut device);
+
+    device.receive_with_quality(&beacon_at(0x85ef, 2), 90, Instant::from_millis(1_200));
+    device.receive_with_quality(&beacon_at(0x1234, 2), 60, Instant::from_millis(1_210));
+
+    assert_eq!(
+        drain(&mut device).len(),
+        1,
+        "a router heard worse than the one already asked is not asked too"
+    );
+}
+
+#[test]
+fn a_rejoin_moves_to_a_router_it_turns_out_to_hear_better() {
+    let mut device = joined_device();
+    for tick in 0..3 {
+        device.transmission_failed(Instant::from_millis(1_000 + tick));
+    }
+    device.tick(Instant::from_millis(1_100));
+    drain(&mut device);
+
+    device.receive_with_quality(&beacon_at(0x85ef, 2), 60, Instant::from_millis(1_200));
+    device.receive_with_quality(&beacon_at(0x1234, 2), 90, Instant::from_millis(1_210));
+
+    let frames = drain(&mut device);
+    assert_eq!(frames.len(), 2, "the better router is asked as well");
+    assert_eq!(
+        u16::from_le_bytes([frames[1][5], frames[1][6]]),
+        0x1234,
+        "the second request goes to the one heard better"
     );
 }
 
@@ -140,9 +255,10 @@ fn a_real_association_response_allocates_the_short_address() {
     device.tick(Instant::from_millis(0));
     drain(&mut device);
     device.receive(&beacon(true), Instant::from_millis(10));
+    device.tick(Instant::from_millis(260));
     drain(&mut device);
 
-    device.receive(ASSOCIATION_RESPONSE, Instant::from_millis(20));
+    device.receive(ASSOCIATION_RESPONSE, Instant::from_millis(270));
 
     assert_eq!(device.radio().short_address, OUR_SHORT);
     assert_eq!(device.radio().pan_id, PAN);
@@ -155,12 +271,13 @@ fn a_real_transport_key_completes_the_join() {
     device.tick(Instant::from_millis(0));
     drain(&mut device);
     device.receive(&beacon(true), Instant::from_millis(10));
+    device.tick(Instant::from_millis(260));
     drain(&mut device);
-    device.receive(ASSOCIATION_RESPONSE, Instant::from_millis(20));
+    device.receive(ASSOCIATION_RESPONSE, Instant::from_millis(270));
     drain(&mut device);
     events(&mut device);
 
-    device.receive(&deliver_unsecured(TRANSPORT_KEY), Instant::from_millis(30));
+    device.receive(&deliver_unsecured(TRANSPORT_KEY), Instant::from_millis(280));
 
     assert!(
         device.joined(),
@@ -188,10 +305,11 @@ fn credentials_survive_a_round_trip_through_storage() {
     device.tick(Instant::from_millis(0));
     drain(&mut device);
     device.receive(&beacon(true), Instant::from_millis(10));
+    device.tick(Instant::from_millis(260));
     drain(&mut device);
-    device.receive(ASSOCIATION_RESPONSE, Instant::from_millis(20));
+    device.receive(ASSOCIATION_RESPONSE, Instant::from_millis(270));
     drain(&mut device);
-    device.receive(&deliver_unsecured(TRANSPORT_KEY), Instant::from_millis(30));
+    device.receive(&deliver_unsecured(TRANSPORT_KEY), Instant::from_millis(280));
 
     let saved = events(&mut device)
         .into_iter()
@@ -214,10 +332,11 @@ fn joined_device() -> Device {
     device.tick(Instant::from_millis(0));
     drain(&mut device);
     device.receive(&beacon(true), Instant::from_millis(10));
+    device.tick(Instant::from_millis(260));
     drain(&mut device);
-    device.receive(ASSOCIATION_RESPONSE, Instant::from_millis(20));
+    device.receive(ASSOCIATION_RESPONSE, Instant::from_millis(270));
     drain(&mut device);
-    device.receive(&deliver_unsecured(TRANSPORT_KEY), Instant::from_millis(30));
+    device.receive(&deliver_unsecured(TRANSPORT_KEY), Instant::from_millis(280));
     drain(&mut device);
     events(&mut device);
     device

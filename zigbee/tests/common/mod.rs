@@ -109,8 +109,9 @@ pub fn joined_device() -> Device {
 pub fn join(device: &mut Device) {
     device.tick(at(0));
     device.receive(&beacon(true), at(10));
-    device.receive(ASSOCIATION_RESPONSE, at(20));
-    device.receive(&deliver(TRANSPORT_KEY), at(30));
+    device.tick(at(260));
+    device.receive(ASSOCIATION_RESPONSE, at(270));
+    device.receive(&deliver(TRANSPORT_KEY), at(280));
     drain(device);
 }
 
