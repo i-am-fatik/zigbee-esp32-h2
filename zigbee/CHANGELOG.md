@@ -3,6 +3,14 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.3 - 2026-08-25
+
+### Added
+
+- The light takes `StartUpOnOff` and `StartUpColorTemperatureMireds`, kept in
+  the tables and applied when it comes back up. A bridge offers both controls
+  on any generated light definition, and writing either was refused before.
+
 ## 0.1.2 - 2026-08-25
 
 ### Added
