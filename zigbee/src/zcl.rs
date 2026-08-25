@@ -82,10 +82,13 @@ pub const COLOUR_STEP_HUE: u8 = 0x02;
 pub const COLOUR_MOVE_TO_SATURATION: u8 = 0x03;
 pub const COLOUR_STEP_SATURATION: u8 = 0x05;
 pub const COLOUR_MOVE_TO_HUE_AND_SATURATION: u8 = 0x06;
+pub const COLOUR_MOVE_TO_XY: u8 = 0x07;
 pub const COLOUR_MOVE_TO_TEMPERATURE: u8 = 0x0a;
 pub const COLOUR_STOP: u8 = 0x47;
 pub const ATTR_CURRENT_HUE: u16 = 0x0000;
 pub const ATTR_CURRENT_SATURATION: u16 = 0x0001;
+pub const ATTR_CURRENT_X: u16 = 0x0003;
+pub const ATTR_CURRENT_Y: u16 = 0x0004;
 pub const ATTR_COLOUR_TEMPERATURE: u16 = 0x0007;
 pub const ATTR_COLOUR_MODE: u16 = 0x0008;
 pub const ATTR_ENHANCED_COLOUR_MODE: u16 = 0x4001;
@@ -94,6 +97,7 @@ pub const ATTR_TEMPERATURE_MIN_MIREDS: u16 = 0x400b;
 pub const ATTR_TEMPERATURE_MAX_MIREDS: u16 = 0x400c;
 
 pub const COLOUR_MODE_HUE_SATURATION: u8 = 0x00;
+pub const COLOUR_MODE_XY: u8 = 0x01;
 pub const COLOUR_MODE_TEMPERATURE: u8 = 0x02;
 
 const COLOUR_UP: u8 = 0x01;
@@ -111,9 +115,12 @@ const HUE_STEPS: u16 = MAX_HUE as u16 + 1;
 pub const COOLEST_MIREDS: u16 = 153;
 pub const WARMEST_MIREDS: u16 = 500;
 
-/// Hue and saturation, and colour temperature. Neither the XY space nor the
-/// enhanced hue, so a bridge that wants those converts on its own side.
-const COLOUR_CAPABILITIES: u16 = 0x0011;
+/// Hue and saturation, the XY space, and colour temperature. Not the enhanced
+/// hue, so a bridge that wants that converts on its own side.
+const COLOUR_CAPABILITIES: u16 = 0x0019;
+
+const WHITE_X: u16 = 0x616b;
+const WHITE_Y: u16 = 0x607d;
 
 const TYPE_BOOL: u8 = 0x10;
 const TYPE_BITMAP8: u8 = 0x18;
@@ -249,6 +256,12 @@ fn write_attribute(
         (CLUSTER_COLOUR_CONTROL, ATTR_CURRENT_SATURATION) => {
             out.u8(TYPE_UINT8).u8(state.saturation);
         }
+        (CLUSTER_COLOUR_CONTROL, ATTR_CURRENT_X) => {
+            out.u8(TYPE_UINT16).u16(state.x);
+        }
+        (CLUSTER_COLOUR_CONTROL, ATTR_CURRENT_Y) => {
+            out.u8(TYPE_UINT16).u16(state.y);
+        }
         (CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_TEMPERATURE) => {
             out.u8(TYPE_UINT16).u16(state.mireds);
         }
@@ -355,6 +368,8 @@ pub struct Scene {
     pub level: u8,
     pub hue: u8,
     pub saturation: u8,
+    pub x: u16,
+    pub y: u16,
     pub mireds: u16,
     pub colour_mode: u8,
 }
@@ -364,6 +379,8 @@ pub struct State {
     pub level: u8,
     pub hue: u8,
     pub saturation: u8,
+    pub x: u16,
+    pub y: u16,
     pub mireds: u16,
     pub colour_mode: u8,
     pub identify_until: Option<Instant>,
@@ -384,6 +401,8 @@ impl Default for State {
             level: MAX_LEVEL,
             hue: 0,
             saturation: 0,
+            x: WHITE_X,
+            y: WHITE_Y,
             mireds: 370,
             colour_mode: COLOUR_MODE_TEMPERATURE,
             identify_until: None,
@@ -482,6 +501,20 @@ impl State {
         self.hue = hue;
         self.saturation = saturation;
         self.colour_mode = COLOUR_MODE_HUE_SATURATION;
+        if changed.colour {
+            self.scene_valid = false;
+        }
+        changed
+    }
+
+    fn set_xy(&mut self, x: u16, y: u16) -> Changed {
+        let changed = Changed {
+            colour: self.x != x || self.y != y || self.colour_mode != COLOUR_MODE_XY,
+            ..Changed::NONE
+        };
+        self.x = x;
+        self.y = y;
+        self.colour_mode = COLOUR_MODE_XY;
         if changed.colour {
             self.scene_valid = false;
         }
@@ -618,6 +651,8 @@ impl State {
             level: self.level,
             hue: self.hue,
             saturation: self.saturation,
+            x: self.x,
+            y: self.y,
             mireds: self.mireds,
             colour_mode: self.colour_mode,
         })
@@ -650,10 +685,10 @@ impl State {
             changed.on_off = true;
             self.on = scene.on;
         }
-        let colour = if scene.colour_mode == COLOUR_MODE_TEMPERATURE {
-            self.set_mireds(scene.mireds)
-        } else {
-            self.set_hue_and_saturation(scene.hue, scene.saturation)
+        let colour = match scene.colour_mode {
+            COLOUR_MODE_TEMPERATURE => self.set_mireds(scene.mireds),
+            COLOUR_MODE_XY => self.set_xy(scene.x, scene.y),
+            _ => self.set_hue_and_saturation(scene.hue, scene.saturation),
         };
         changed.colour = colour.colour;
 
@@ -869,13 +904,16 @@ fn read_extension_fields(payload: &[u8], scene: &mut Scene) {
     }
 }
 
-/// The colour field set opens with the XY space this device does not serve, so
-/// the hue and the saturation are taken from further in, and a temperature that
-/// is not zero is what says the scene wanted a white rather than a colour.
+/// The colour field set opens with the XY space, the hue and the saturation
+/// are taken from further in, and a temperature that is not zero is what says
+/// the scene wanted a white rather than a colour.
 fn read_colour_fields(f: &mut Reader, scene: &mut Scene) {
-    if f.skip(4).is_none() {
+    let (Some(x), Some(y)) = (f.u16(), f.u16()) else {
         return;
-    }
+    };
+    scene.x = x;
+    scene.y = y;
+
     let (Some(enhanced_hue), Some(saturation)) = (f.u16(), f.u8()) else {
         return;
     };
@@ -896,7 +934,7 @@ fn write_extension_fields(out: &mut Writer, scene: &Scene) {
     out.u16(CLUSTER_ON_OFF).u8(1).u8(scene.on as u8);
     out.u16(CLUSTER_LEVEL_CONTROL).u8(1).u8(scene.level);
     out.u16(CLUSTER_COLOUR_CONTROL).u8(13);
-    out.u16(0).u16(0);
+    out.u16(scene.x).u16(scene.y);
     out.u16((scene.hue as u16) << 8).u8(scene.saturation);
     out.u8(0).u8(0).u16(0);
     out.u16(match scene.colour_mode {
@@ -999,6 +1037,8 @@ fn handle_scene_command(out: &mut Writer, request: &Incoming, state: &mut State)
                 level: state.level,
                 hue: state.hue,
                 saturation: state.saturation,
+                x: state.x,
+                y: state.y,
                 mireds: state.mireds,
                 colour_mode: state.colour_mode,
             };
@@ -1205,6 +1245,16 @@ fn handle_cluster_command(
             match (r.u8(), r.u8()) {
                 (Some(hue), Some(saturation)) => {
                     changed = state.set_hue_and_saturation(hue, saturation);
+                    STATUS_SUCCESS
+                }
+                _ => STATUS_INVALID_FIELD,
+            }
+        }
+        (CLUSTER_COLOUR_CONTROL, COLOUR_MOVE_TO_XY) => {
+            let mut r = Reader::new(request.payload);
+            match (r.u16(), r.u16()) {
+                (Some(x), Some(y)) => {
+                    changed = state.set_xy(x, y);
                     STATUS_SUCCESS
                 }
                 _ => STATUS_INVALID_FIELD,
@@ -1426,13 +1476,45 @@ mod tests {
     }
 
     #[test]
-    fn the_capabilities_claim_hue_saturation_and_temperature_and_nothing_else() {
+    fn the_capabilities_claim_the_xy_space_a_bridge_needs_to_offer_colour() {
         let mut state = State::default();
         let reply = read(CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_CAPABILITIES, &mut state);
 
         assert_eq!(reply[5], STATUS_SUCCESS);
         assert_eq!(reply[6], TYPE_BITMAP16);
-        assert_eq!(u16::from_le_bytes([reply[7], reply[8]]), 0x0011);
+        assert_eq!(u16::from_le_bytes([reply[7], reply[8]]), 0x0019);
+    }
+
+    #[test]
+    fn a_move_to_a_point_in_the_xy_space_is_taken_and_read_back() {
+        let mut state = State::default();
+        let mut request = vec![0x01, 0x71, COLOUR_MOVE_TO_XY];
+        request.extend_from_slice(&0x2710u16.to_le_bytes());
+        request.extend_from_slice(&0x4e20u16.to_le_bytes());
+        request.extend_from_slice(&0u16.to_le_bytes());
+
+        let (outcome, _) = run(CLUSTER_COLOUR_CONTROL, &request, &mut state, 0);
+
+        assert!(outcome.changed.colour);
+        assert_eq!(state.colour_mode, COLOUR_MODE_XY);
+
+        let x = read(CLUSTER_COLOUR_CONTROL, ATTR_CURRENT_X, &mut state);
+        let y = read(CLUSTER_COLOUR_CONTROL, ATTR_CURRENT_Y, &mut state);
+        assert_eq!(x[6], TYPE_UINT16);
+        assert_eq!(u16::from_le_bytes([x[7], x[8]]), 0x2710);
+        assert_eq!(u16::from_le_bytes([y[7], y[8]]), 0x4e20);
+    }
+
+    #[test]
+    fn a_move_to_a_point_without_both_axes_is_refused() {
+        let mut state = State::default();
+        let mut truncated = vec![0x01, 0x72, COLOUR_MOVE_TO_XY];
+        truncated.extend_from_slice(&0x2710u16.to_le_bytes());
+
+        let (_, reply) = run(CLUSTER_COLOUR_CONTROL, &truncated, &mut state, 0);
+
+        assert_eq!(reply[4], STATUS_INVALID_FIELD);
+        assert_eq!(state.colour_mode, COLOUR_MODE_TEMPERATURE);
     }
 
     #[test]
@@ -1455,7 +1537,7 @@ mod tests {
     }
 
     #[test]
-    fn the_colour_mode_says_which_of_the_two_is_live() {
+    fn the_colour_mode_says_which_of_the_three_is_live() {
         let mut state = State::default();
         let white = read(CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_MODE, &mut state);
         assert_eq!(white[6], TYPE_ENUM8);
@@ -1464,6 +1546,23 @@ mod tests {
         state.set_hue_and_saturation(100, 200);
         let wheel = read(CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_MODE, &mut state);
         assert_eq!(wheel[7], COLOUR_MODE_HUE_SATURATION);
+
+        state.set_xy(0x2710, 0x4e20);
+        let point = read(CLUSTER_COLOUR_CONTROL, ATTR_COLOUR_MODE, &mut state);
+        assert_eq!(point[7], COLOUR_MODE_XY);
+    }
+
+    #[test]
+    fn a_scene_remembers_the_point_it_was_captured_at() {
+        let mut state = State::default();
+        state.set_xy(0x2710, 0x4e20);
+        assert_eq!(state.store_scene(0, 3), STATUS_SUCCESS);
+
+        state.set_mireds(300);
+        assert!(state.recall_scene(0, 3).is_some());
+
+        assert_eq!(state.colour_mode, COLOUR_MODE_XY);
+        assert_eq!((state.x, state.y), (0x2710, 0x4e20));
     }
 
     #[test]

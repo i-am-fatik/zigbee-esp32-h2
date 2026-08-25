@@ -272,7 +272,7 @@ pub struct Transmission<'a> {
     pub request_cca: bool,
 }
 
-const SCENE_RECORD: usize = 10;
+const SCENE_RECORD: usize = 14;
 const SCENES_AT: usize = 4 + 2 * zcl::MAX_GROUPS + 1;
 const PACKED: usize = SCENES_AT + SCENE_RECORD * zcl::MAX_SCENES;
 
@@ -297,7 +297,7 @@ impl Tables {
     /// writes words and would refuse a record that ends part way through one.
     pub const LEN: usize = PACKED.next_multiple_of(4);
 
-    const MAGIC: u32 = 0x5a54_424c;
+    const MAGIC: u32 = 0x5a54_424d;
 
     /// Encodes the tables for storage.
     ///
@@ -344,8 +344,10 @@ impl Tables {
             record[at + 4] = scene.level;
             record[at + 5] = scene.hue;
             record[at + 6] = scene.saturation;
-            record[at + 7..at + 9].copy_from_slice(&scene.mireds.to_le_bytes());
-            record[at + 9] = scene.colour_mode;
+            record[at + 7..at + 9].copy_from_slice(&scene.x.to_le_bytes());
+            record[at + 9..at + 11].copy_from_slice(&scene.y.to_le_bytes());
+            record[at + 11..at + 13].copy_from_slice(&scene.mireds.to_le_bytes());
+            record[at + 13] = scene.colour_mode;
         }
         Self(record)
     }
@@ -369,8 +371,10 @@ impl Tables {
                 level: self.0[at + 4],
                 hue: self.0[at + 5],
                 saturation: self.0[at + 6],
-                mireds: u16::from_le_bytes([self.0[at + 7], self.0[at + 8]]),
-                colour_mode: self.0[at + 9],
+                x: u16::from_le_bytes([self.0[at + 7], self.0[at + 8]]),
+                y: u16::from_le_bytes([self.0[at + 9], self.0[at + 10]]),
+                mireds: u16::from_le_bytes([self.0[at + 11], self.0[at + 12]]),
+                colour_mode: self.0[at + 13],
             });
         }
     }
@@ -378,7 +382,7 @@ impl Tables {
 
 /// How the light was last told to colour itself.
 ///
-/// The two are alternatives rather than layers: setting one replaces the other,
+/// They are alternatives rather than layers: setting one replaces the others,
 /// and [`Device::colour`] reports whichever the coordinator asked for last.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
@@ -395,6 +399,13 @@ pub enum Colour {
         /// Mireds, a million over kelvin, so the smaller number is the cooler
         /// light. From 153, about 6500 K, to 500, about 2000 K.
         mireds: u16,
+    },
+    /// A point in the CIE 1931 colour space.
+    Xy {
+        /// Position along the x axis, 0 to 65535 standing for 0 to 1.
+        x: u16,
+        /// Position along the y axis, 0 to 65535 standing for 0 to 1.
+        y: u16,
     },
 }
 
@@ -826,6 +837,10 @@ impl Device {
         match self.application.colour_mode {
             zcl::COLOUR_MODE_TEMPERATURE => Colour::Temperature {
                 mireds: self.application.mireds,
+            },
+            zcl::COLOUR_MODE_XY => Colour::Xy {
+                x: self.application.x,
+                y: self.application.y,
             },
             _ => Colour::HueSaturation {
                 hue: self.application.hue,

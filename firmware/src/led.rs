@@ -23,6 +23,8 @@ const BITS: usize = 24;
 /// range starts at zero.
 const WHEEL: u16 = MAX_HUE as u16 + 1;
 
+const XY_ONE: i64 = 65_536;
+
 const DAYLIGHT: Rgb = Rgb::new(201, 226, 255);
 const CANDLE: Rgb = Rgb::new(255, 157, 63);
 
@@ -83,6 +85,31 @@ impl Rgb {
             4 => Rgb::new(rising, bottom, value),
             _ => Rgb::new(value, bottom, falling),
         }
+    }
+
+    pub fn from_xy(x: u16, y: u16, value: u8) -> Self {
+        if y == 0 {
+            return Rgb::new(value, value, value);
+        }
+
+        let tristimulus_x = XY_ONE * x as i64 / y as i64;
+        let tristimulus_z = XY_ONE * (XY_ONE - x as i64 - y as i64) / y as i64;
+        let srgb_primary = |from_x: i64, from_y: i64, from_z: i64| {
+            (from_x * tristimulus_x + from_y * XY_ONE + from_z * tristimulus_z) / 10_000
+        };
+
+        let red = srgb_primary(32_406, -15_372, -4_986);
+        let green = srgb_primary(-9_689, 18_758, 415);
+        let blue = srgb_primary(557, -2_040, 10_570);
+
+        let brightest = red.max(green).max(blue).max(1);
+        let scaled_to_full = |primary: i64| (primary.max(0) * 255 / brightest) as u8;
+        Rgb::new(
+            scaled_to_full(red),
+            scaled_to_full(green),
+            scaled_to_full(blue),
+        )
+        .dim(value)
     }
 
     /// A white from a colour temperature, mixed between the two ends of what

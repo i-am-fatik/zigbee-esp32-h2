@@ -64,6 +64,7 @@ fn indicator(device: &Device, blink_lit: bool) -> Rgb {
         Colour::HueSaturation { hue, saturation } => {
             Rgb::from_hue_and_saturation(hue, saturation, level)
         }
+        Colour::Xy { x, y } => Rgb::from_xy(x, y, level),
         Colour::Temperature { mireds } => Rgb::from_mireds(mireds, level),
         _ => Rgb::from_hue_and_saturation(0, 0, level),
     }
