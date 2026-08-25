@@ -3,11 +3,27 @@
 
 mod common;
 
-use common::{at, command, device, events, group_command, join_group, recall_scene, store_scene};
-use zigbee::{Device, Event, Tables, CLUSTER_GROUPS, CLUSTER_ON_OFF};
+use common::{
+    application_frame, at, command, deliver, device, events, group_command, join_group,
+    recall_scene, store_scene,
+};
+use zigbee::{
+    Colour, Device, Event, Tables, CLUSTER_COLOUR_CONTROL, CLUSTER_GROUPS, CLUSTER_ON_OFF,
+};
 
 const GROUP_REMOVE_ALL: u8 = 0x04;
 const ON: u8 = 0x01;
+
+const WRITE_ATTRIBUTES: u8 = 0x02;
+const TYPE_ENUM8: u8 = 0x30;
+const TYPE_UINT16: u8 = 0x21;
+
+fn write_attribute(cluster: u16, attribute: u16, value: &[u8]) -> Vec<u8> {
+    let mut request = vec![0x00, 0x51, WRITE_ATTRIBUTES];
+    request.extend_from_slice(&attribute.to_le_bytes());
+    request.extend_from_slice(value);
+    deliver(&application_frame(cluster, &request))
+}
 
 fn last_tables(device: &mut Device) -> Option<Tables> {
     events(device)
@@ -157,4 +173,47 @@ fn both_records_are_a_whole_number_of_flash_words() {
         "Credentials::LEN is {}",
         zigbee::Credentials::LEN
     );
+}
+
+#[test]
+fn a_light_told_to_come_up_on_does_so_after_a_restart() {
+    let mut device = device();
+    device.receive(
+        &write_attribute(CLUSTER_ON_OFF, 0x4003, &[TYPE_ENUM8, ON]),
+        at(10),
+    );
+    let saved = last_tables(&mut device).expect("a startup setting is worth saving");
+
+    let device = restarted(saved);
+
+    assert!(device.on_off(), "the coordinator asked it to boot lit");
+}
+
+#[test]
+fn a_light_told_to_come_up_at_a_temperature_does_so_after_a_restart() {
+    let mut device = device();
+    let mireds = 250u16;
+    let mut value = vec![TYPE_UINT16];
+    value.extend_from_slice(&mireds.to_le_bytes());
+    device.receive(
+        &write_attribute(CLUSTER_COLOUR_CONTROL, 0x4010, &value),
+        at(10),
+    );
+    let saved = last_tables(&mut device).expect("a startup setting is worth saving");
+
+    let device = restarted(saved);
+
+    assert_eq!(device.colour(), Colour::Temperature { mireds });
+}
+
+#[test]
+fn a_light_nobody_told_anything_comes_up_the_way_it_always_did() {
+    let mut device = device();
+    join_group(&mut device, 7, 0);
+    let saved = last_tables(&mut device).expect("joining a group is worth saving");
+
+    let device = restarted(saved);
+
+    assert!(!device.on_off());
+    assert_eq!(device.colour(), Colour::Temperature { mireds: 370 });
 }

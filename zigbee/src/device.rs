@@ -274,7 +274,8 @@ pub struct Transmission<'a> {
 
 const SCENE_RECORD: usize = 14;
 const SCENES_AT: usize = 4 + 2 * zcl::MAX_GROUPS + 1;
-const PACKED: usize = SCENES_AT + SCENE_RECORD * zcl::MAX_SCENES;
+const STARTUP_AT: usize = SCENES_AT + SCENE_RECORD * zcl::MAX_SCENES;
+const PACKED: usize = STARTUP_AT + 3;
 
 /// The groups the light belongs to and the scenes it can put back, in the form
 /// to hand to storage.
@@ -297,7 +298,7 @@ impl Tables {
     /// writes words and would refuse a record that ends part way through one.
     pub const LEN: usize = PACKED.next_multiple_of(4);
 
-    const MAGIC: u32 = 0x5a54_424d;
+    const MAGIC: u32 = 0x5a54_424e;
 
     /// Encodes the tables for storage.
     ///
@@ -349,6 +350,8 @@ impl Tables {
             record[at + 11..at + 13].copy_from_slice(&scene.mireds.to_le_bytes());
             record[at + 13] = scene.colour_mode;
         }
+        record[STARTUP_AT] = state.startup_on_off;
+        record[STARTUP_AT + 1..STARTUP_AT + 3].copy_from_slice(&state.startup_mireds.to_le_bytes());
         Self(record)
     }
 
@@ -377,6 +380,9 @@ impl Tables {
                 colour_mode: self.0[at + 13],
             });
         }
+
+        state.startup_on_off = self.0[STARTUP_AT];
+        state.startup_mireds = u16::from_le_bytes([self.0[STARTUP_AT + 1], self.0[STARTUP_AT + 2]]);
     }
 }
 
@@ -623,6 +629,7 @@ impl Device {
     /// can be called on a device built either way.
     pub fn restore_tables(&mut self, tables: Tables) {
         tables.apply(&mut self.application);
+        self.application.start_up();
     }
 
     /// Lets time pass: drives scanning, association, polling and reporting.

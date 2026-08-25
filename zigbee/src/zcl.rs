@@ -55,6 +55,7 @@ pub const ON_OFF_OFF: u8 = 0x00;
 pub const ON_OFF_ON: u8 = 0x01;
 pub const ON_OFF_TOGGLE: u8 = 0x02;
 pub const ATTR_ON_OFF: u16 = 0x0000;
+pub const ATTR_STARTUP_ON_OFF: u16 = 0x4003;
 
 pub const LEVEL_MOVE_TO_LEVEL: u8 = 0x00;
 pub const LEVEL_MOVE: u8 = 0x01;
@@ -95,6 +96,7 @@ pub const ATTR_ENHANCED_COLOUR_MODE: u16 = 0x4001;
 pub const ATTR_COLOUR_CAPABILITIES: u16 = 0x400a;
 pub const ATTR_TEMPERATURE_MIN_MIREDS: u16 = 0x400b;
 pub const ATTR_TEMPERATURE_MAX_MIREDS: u16 = 0x400c;
+pub const ATTR_STARTUP_COLOUR_TEMPERATURE: u16 = 0x4010;
 
 pub const COLOUR_MODE_HUE_SATURATION: u8 = 0x00;
 pub const COLOUR_MODE_XY: u8 = 0x01;
@@ -121,6 +123,12 @@ const COLOUR_CAPABILITIES: u16 = 0x0019;
 
 const WHITE_X: u16 = 0x616b;
 const WHITE_Y: u16 = 0x607d;
+
+const STARTUP_OFF: u8 = 0x00;
+const STARTUP_ON: u8 = 0x01;
+const STARTUP_TOGGLE: u8 = 0x02;
+pub const STARTUP_AS_IT_BOOTS: u8 = 0xff;
+pub const STARTUP_KEEP_TEMPERATURE: u16 = 0xffff;
 
 const TYPE_BOOL: u8 = 0x10;
 const TYPE_BITMAP8: u8 = 0x18;
@@ -243,6 +251,12 @@ fn write_attribute(
         }
         (CLUSTER_SCENES, ATTR_SCENE_VALID) => {
             out.u8(TYPE_BOOL).u8(state.scene_valid as u8);
+        }
+        (CLUSTER_ON_OFF, ATTR_STARTUP_ON_OFF) => {
+            out.u8(TYPE_ENUM8).u8(state.startup_on_off);
+        }
+        (CLUSTER_COLOUR_CONTROL, ATTR_STARTUP_COLOUR_TEMPERATURE) => {
+            out.u8(TYPE_UINT16).u16(state.startup_mireds);
         }
         (CLUSTER_ON_OFF, ATTR_ON_OFF) => {
             out.u8(TYPE_BOOL).u8(state.on as u8);
@@ -383,6 +397,8 @@ pub struct State {
     pub y: u16,
     pub mireds: u16,
     pub colour_mode: u8,
+    pub startup_on_off: u8,
+    pub startup_mireds: u16,
     pub identify_until: Option<Instant>,
     pub on_off_report: Reportable,
     pub level_report: Reportable,
@@ -405,6 +421,8 @@ impl Default for State {
             y: WHITE_Y,
             mireds: 370,
             colour_mode: COLOUR_MODE_TEMPERATURE,
+            startup_on_off: STARTUP_AS_IT_BOOTS,
+            startup_mireds: STARTUP_KEEP_TEMPERATURE,
             identify_until: None,
             on_off_report: Reportable::default(),
             level_report: Reportable::default(),
@@ -505,6 +523,18 @@ impl State {
             self.scene_valid = false;
         }
         changed
+    }
+
+    pub fn start_up(&mut self) {
+        match self.startup_on_off {
+            STARTUP_OFF => self.on = false,
+            STARTUP_ON => self.on = true,
+            STARTUP_TOGGLE => self.on = !self.on,
+            _ => {}
+        }
+        if self.startup_mireds != STARTUP_KEEP_TEMPERATURE {
+            self.set_mireds(self.startup_mireds);
+        }
     }
 
     fn set_xy(&mut self, x: u16, y: u16) -> Changed {
@@ -775,8 +805,8 @@ pub fn handle(
         }
         CMD_WRITE_ATTRIBUTES => {
             header(out, false, request.seq, CMD_WRITE_ATTRIBUTES_RESPONSE);
-            write_attributes(out, cluster, request.payload, state, now);
-            replied(Changed::NONE)
+            let changed = write_attributes(out, cluster, request.payload, state, now);
+            replied(changed)
         }
         CMD_DISCOVER_ATTRIBUTES => {
             header(out, false, request.seq, CMD_DISCOVER_ATTRIBUTES_RESPONSE);
@@ -858,24 +888,40 @@ fn write_attributes(
     payload: &[u8],
     state: &mut State,
     now: Instant,
-) {
+) -> Changed {
     let accepted_at = out.len();
     out.u8(STATUS_SUCCESS);
+    let mut changed = Changed::NONE;
 
     let mut r = Reader::new(payload);
     while let Some(attribute) = r.u16() {
         let Some(data_type) = r.u8() else { break };
-        let writable = cluster == CLUSTER_IDENTIFY && attribute == ATTR_IDENTIFY_TIME;
-        if writable && data_type == TYPE_UINT16 {
-            let Some(seconds) = r.u16() else { break };
-            state.identify_for(seconds, now);
-            continue;
+        match (cluster, attribute, data_type) {
+            (CLUSTER_IDENTIFY, ATTR_IDENTIFY_TIME, TYPE_UINT16) => {
+                let Some(seconds) = r.u16() else { break };
+                state.identify_for(seconds, now);
+                continue;
+            }
+            (CLUSTER_ON_OFF, ATTR_STARTUP_ON_OFF, TYPE_ENUM8) => {
+                let Some(behaviour) = r.u8() else { break };
+                state.startup_on_off = behaviour;
+                changed = Changed::TABLES;
+                continue;
+            }
+            (CLUSTER_COLOUR_CONTROL, ATTR_STARTUP_COLOUR_TEMPERATURE, TYPE_UINT16) => {
+                let Some(mireds) = r.u16() else { break };
+                state.startup_mireds = mireds;
+                changed = Changed::TABLES;
+                continue;
+            }
+            _ => {}
         }
         out.truncate(accepted_at);
         out.u8(STATUS_UNSUPPORTED_ATTRIBUTE);
         out.u16(attribute);
         break;
     }
+    changed
 }
 
 /// The values a scene remembers, written the way the specification lays them
