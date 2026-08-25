@@ -124,7 +124,7 @@ impl<'a> Radio<'a> {
         }
     }
 
-    pub fn receive(&mut self, into: &mut [u8; MAX_FRAME_LEN]) -> Option<usize> {
+    pub fn receive(&mut self, into: &mut [u8; MAX_FRAME_LEN]) -> Option<(usize, u8)> {
         let RawReceived { data, .. } = self.driver.raw_received()?;
         let psdu_len = data[0] as usize;
         if psdu_len < FCS_LEN || psdu_len > data.len() - 1 {
@@ -132,6 +132,6 @@ impl<'a> Radio<'a> {
         }
         let len = psdu_len - FCS_LEN;
         into[..len].copy_from_slice(&data[1..1 + len]);
-        Some(len)
+        Some((len, data[psdu_len]))
     }
 }

@@ -98,6 +98,7 @@ fn main() -> ! {
     }
     let mut device = match store.load_credentials() {
         Some(credentials) => {
+            println!("store: parent 0x{:04x}", credentials.parent());
             println!(
                 "store: rejoining as 0x{:04x} on channel {}",
                 credentials.short_address(),
@@ -123,8 +124,8 @@ fn main() -> ! {
 
     loop {
         let mut received = [0u8; zigbee::MAX_FRAME_LEN];
-        while let Some(len) = radio.receive(&mut received) {
-            device.receive(&received[..len], now());
+        while let Some((len, lqi)) = radio.receive(&mut received) {
+            device.receive_with_quality(&received[..len], lqi, now());
         }
 
         if button.was_pressed(now()) {
