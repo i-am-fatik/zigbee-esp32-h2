@@ -3,6 +3,17 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.4 - 2026-08-25
+
+### Added
+
+- Identify takes Trigger Effect, so blink, breathe, okay and channel change
+  each hold the light's attention for as long as they are named for, and stop
+  ends whichever is running.
+- The colour cluster takes Move Hue, which is the command a bridge sends for a
+  colour loop. The hue turns at the given rate and wraps, and either a hold or
+  a stop leaves it where it was caught.
+
 ## 0.1.3 - 2026-08-25
 
 ### Added
