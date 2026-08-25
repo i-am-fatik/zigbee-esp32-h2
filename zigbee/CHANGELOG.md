@@ -3,6 +3,15 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.2 - 2026-08-25
+
+### Added
+
+- The colour cluster serves the XY space: `currentX`, `currentY` and Move to
+  Color, reported through the new `Colour::Xy`. A bridge that generates its own
+  definition offers no colour control at all without it, so a light claiming
+  only hue and saturation came out white-only.
+
 ## 0.1.1 - 2026-08-24
 
 ### Fixed
