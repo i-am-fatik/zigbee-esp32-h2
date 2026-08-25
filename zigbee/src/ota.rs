@@ -29,6 +29,13 @@ const SUB_ELEMENT: u32 = 6;
 
 const RETRY_MS: u32 = 5_000;
 
+/// A server that has nothing to say may also say nothing at all, so a device
+/// that hears no answer stops asking at this rate and falls back to
+/// [`UNANSWERED_RETRY_MS`]. Asking every few seconds forever keeps the
+/// coordinator busy delivering answers to a device that is not waiting for one.
+const QUERIES_BEFORE_BACKING_OFF: u8 = 3;
+const UNANSWERED_RETRY_MS: u32 = 3_600_000;
+
 /// Which firmware the device is running, which is what a server needs to decide
 /// whether it has anything newer.
 #[derive(Clone, Copy, Debug)]
@@ -50,6 +57,7 @@ pub struct State {
     phase: Phase,
     server: u16,
     due_at: Instant,
+    unanswered: u8,
     offered: u32,
     file_size: u32,
     file_offset: u32,
@@ -74,6 +82,7 @@ impl Default for State {
             phase: Phase::Idle,
             server: 0x0000,
             due_at: Instant::from_millis(0),
+            unanswered: 0,
             offered: 0,
             file_size: 0,
             file_offset: 0,
@@ -98,11 +107,12 @@ impl State {
     /// Asks for an image, which is what a device does once it is on a network
     /// and again whenever a server says something is available.
     pub fn ask(&mut self, now: Instant) {
-        if self.running() {
+        if self.running() && self.phase != Phase::Querying {
             return;
         }
         self.phase = Phase::Querying;
         self.due_at = now;
+        self.unanswered = 0;
     }
 
     pub fn stop(&mut self) {
@@ -122,7 +132,13 @@ impl State {
         self.due_at = now.plus_millis(RETRY_MS);
         match self.phase {
             Phase::Idle => None,
-            Phase::Querying => Some(Wanted::Query),
+            Phase::Querying => {
+                self.unanswered = self.unanswered.saturating_add(1);
+                if self.unanswered > QUERIES_BEFORE_BACKING_OFF {
+                    self.due_at = now.plus_millis(UNANSWERED_RETRY_MS);
+                }
+                Some(Wanted::Query)
+            }
             Phase::Downloading if block_pending => None,
             Phase::Downloading => Some(Wanted::Block),
             Phase::Finishing => Some(Wanted::End(STATUS_SUCCESS)),
@@ -210,6 +226,7 @@ impl State {
             return Outcome::Nothing;
         };
 
+        self.unanswered = 0;
         self.server = source;
         self.offered = version;
         self.file_size = size;
@@ -368,4 +385,55 @@ fn header(out: &mut Writer, seq: u8, command: u8) {
     out.u8(0x11);
     out.u8(seq);
     out.u8(command);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(millis: u32) -> Instant {
+        Instant::from_millis(millis)
+    }
+
+    #[test]
+    fn a_server_that_never_answers_stops_being_asked_every_few_seconds() {
+        let mut state = State::default();
+        state.ask(at(0));
+
+        let mut asked = 0usize;
+        let mut last_asked_at = 0u32;
+        let mut millis = 0u32;
+        while millis < 60_000 {
+            if state.due(at(millis), false).is_some() {
+                asked += 1;
+                last_asked_at = millis;
+            }
+            millis += 100;
+        }
+
+        assert_eq!(
+            asked,
+            QUERIES_BEFORE_BACKING_OFF as usize + 1,
+            "an unanswered query is repeated a few times and then left alone"
+        );
+        assert!(
+            last_asked_at <= 20_000,
+            "the last of them still falls inside the first few attempts"
+        );
+    }
+
+    #[test]
+    fn an_answer_lets_the_device_ask_freely_again() {
+        let mut state = State::default();
+        state.ask(at(0));
+        for millis in [0u32, 5_000, 10_000, 15_000, 20_000] {
+            state.due(at(millis), false);
+        }
+
+        state.ask(at(25_000));
+        assert!(
+            state.due(at(25_000), false).is_some(),
+            "asking again starts the count over"
+        );
+    }
 }
