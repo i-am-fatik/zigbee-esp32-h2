@@ -13,7 +13,7 @@ const FCS_LEN: usize = 2;
 /// before the next one may be handed over.
 static TRANSMIT_DONE: AtomicBool = AtomicBool::new(false);
 static TRANSMIT_FAILED: AtomicBool = AtomicBool::new(false);
-const TRANSMIT_TIMEOUT: Duration = Duration::from_millis(120);
+const TRANSMIT_TIMEOUT: Duration = Duration::from_millis(260);
 
 /// A clear channel assessment loses against a busy network, so a frame that
 /// was refused is offered again, finally without asking the channel first.
@@ -28,6 +28,12 @@ fn back_off(attempt: u8) {
     let millis = (1u32 << attempt) + jitter;
     let deadline = Instant::now() + Duration::from_millis(millis as u64);
     while Instant::now() < deadline {}
+}
+
+enum Attempt {
+    Delivered,
+    Refused,
+    Unanswered,
 }
 
 fn transmit_done() {
@@ -89,25 +95,33 @@ impl<'a> Radio<'a> {
 
         for attempt in 0..TRANSMIT_ATTEMPTS {
             let last_attempt = attempt + 1 == TRANSMIT_ATTEMPTS;
-            TRANSMIT_DONE.store(false, Ordering::Release);
-            TRANSMIT_FAILED.store(false, Ordering::Release);
-
-            let _ = self.driver.transmit_raw(frame, cca && !last_attempt);
-
-            let deadline = Instant::now() + TRANSMIT_TIMEOUT;
-            while !TRANSMIT_DONE.load(Ordering::Acquire) && Instant::now() < deadline {
-                core::hint::spin_loop();
+            match self.offer(frame, cca && !last_attempt) {
+                Attempt::Delivered | Attempt::Unanswered => return true,
+                Attempt::Refused => back_off(attempt),
             }
-            self.driver.start_receive();
-
-            let settled = TRANSMIT_DONE.load(Ordering::Acquire);
-            let refused = TRANSMIT_FAILED.load(Ordering::Acquire);
-            if settled && !refused {
-                return true;
-            }
-            back_off(attempt);
         }
         false
+    }
+
+    fn offer(&mut self, frame: &[u8], cca: bool) -> Attempt {
+        TRANSMIT_DONE.store(false, Ordering::Release);
+        TRANSMIT_FAILED.store(false, Ordering::Release);
+
+        let _ = self.driver.transmit_raw(frame, cca);
+
+        let deadline = Instant::now() + TRANSMIT_TIMEOUT;
+        while !TRANSMIT_DONE.load(Ordering::Acquire) && Instant::now() < deadline {
+            core::hint::spin_loop();
+        }
+        self.driver.start_receive();
+
+        if !TRANSMIT_DONE.load(Ordering::Acquire) {
+            Attempt::Unanswered
+        } else if TRANSMIT_FAILED.load(Ordering::Acquire) {
+            Attempt::Refused
+        } else {
+            Attempt::Delivered
+        }
     }
 
     pub fn receive(&mut self, into: &mut [u8; MAX_FRAME_LEN]) -> Option<usize> {
