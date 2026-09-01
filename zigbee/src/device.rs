@@ -569,6 +569,7 @@ pub struct Device {
     aps_counter: u8,
     zdo_seq: u8,
     duplicates: aps::Duplicates,
+    replays: nwk::Replays,
     identifying: bool,
     firmware: ota::State,
     firmware_block: ota::Block,
@@ -615,6 +616,7 @@ impl Device {
             aps_counter: 0,
             zdo_seq: 0,
             duplicates: aps::Duplicates::default(),
+            replays: nwk::Replays::default(),
             identifying: false,
             firmware: ota::State::default(),
             firmware_block: ota::Block::default(),
@@ -1371,6 +1373,7 @@ impl Device {
         self.radio.pan_id = UNASSIGNED;
         self.radio.short_address = UNASSIGNED;
         self.network_key = None;
+        self.replays = nwk::Replays::default();
         self.counter = 0;
         self.counter_persisted = 0;
         self.phase = Phase::Scanning {
@@ -1483,6 +1486,9 @@ impl Device {
             let Some(unsecured) = nwk::unsecure(frame, header_len, &key) else {
                 return;
             };
+            if self.replays.seen(unsecured.source, unsecured.counter) {
+                return;
+            }
             unsecured.offset..unsecured.offset + unsecured.len
         } else {
             header_len..frame.len()
@@ -1570,6 +1576,7 @@ impl Device {
         self.network_key = Some(key);
         self.key_sequence = sequence;
         self.next_network_key = None;
+        self.replays = nwk::Replays::default();
         self.counter = 0;
         self.counter_persisted = 0;
         self.remember();
@@ -1818,5 +1825,101 @@ mod tests {
         );
 
         assert!(!device.joined());
+    }
+    const NETWORK_KEY: [u8; KEY_LEN] = [0x5a; KEY_LEN];
+    const COORDINATOR_IEEE: u64 = 0x57c3_ec80_bbff_440a;
+    const LEVEL_STEP: u8 = 0x02;
+    const STEP_UP: u8 = 0x00;
+
+    fn light_on_a_network(level: u8) -> Device {
+        let mut device = Device::new(Config::new(0x0011_2233_4455_6677));
+        device.network_key = Some(NETWORK_KEY);
+        device.radio.pan_id = 0xa269;
+        device.radio.short_address = 0x4560;
+        device.radio.channel = 20;
+        device.parent = nwk::COORDINATOR;
+        device.phase = Phase::Joined;
+        device.set_level(level);
+        while device.next_event().is_some() {}
+        while device.next_transmission().is_some() {}
+        device
+    }
+
+    fn secured_step(frame_counter: u32, aps_counter: u8, by: u8) -> std::vec::Vec<u8> {
+        let mut application = std::vec::Vec::new();
+        application.push(aps::FRAME_TYPE_DATA);
+        application.push(zdo::ENDPOINT);
+        application.extend_from_slice(&zdo::CLUSTER_LEVEL_CONTROL.to_le_bytes());
+        application.extend_from_slice(&aps::PROFILE_HOME_AUTOMATION.to_le_bytes());
+        application.push(COORDINATOR_ENDPOINT);
+        application.push(aps_counter);
+        application.extend_from_slice(&[0x01, 0x62, LEVEL_STEP, STEP_UP, by, 0x00, 0x00]);
+
+        let mut buffer = [0u8; mac::MAX_FRAME_LEN];
+        let mut out = Writer::new(&mut buffer);
+        nwk::build_secured(
+            &mut out,
+            nwk::Header {
+                frame_type: nwk::FRAME_TYPE_DATA,
+                dst: 0x4560,
+                src: nwk::COORDINATOR,
+                radius: nwk::DEFAULT_RADIUS,
+                seq: 0x42,
+                src_ieee: None,
+            },
+            &NETWORK_KEY,
+            0,
+            frame_counter,
+            COORDINATOR_IEEE,
+            &application,
+        );
+        out.written().expect("a step fits in one frame").to_vec()
+    }
+
+    #[test]
+    fn a_frame_counter_that_did_not_advance_is_refused() {
+        let mut device = light_on_a_network(100);
+
+        let mut first = secured_step(500, 0x10, 30);
+        device.on_network_frame(&mut first, Instant::from_millis(0));
+        assert_eq!(device.level(), 130);
+
+        let mut replayed = secured_step(500, 0x11, 30);
+        device.on_network_frame(&mut replayed, Instant::from_millis(100));
+        assert_eq!(
+            device.level(),
+            130,
+            "a frame recorded off the air was acted on a second time"
+        );
+    }
+
+    #[test]
+    fn a_frame_counter_that_advanced_is_taken() {
+        let mut device = light_on_a_network(100);
+
+        let mut first = secured_step(500, 0x10, 10);
+        device.on_network_frame(&mut first, Instant::from_millis(0));
+
+        let mut second = secured_step(501, 0x11, 10);
+        device.on_network_frame(&mut second, Instant::from_millis(100));
+
+        assert_eq!(device.level(), 120);
+    }
+
+    #[test]
+    fn a_new_network_key_starts_the_replay_table_over() {
+        let mut device = light_on_a_network(100);
+
+        let mut first = secured_step(500, 0x10, 10);
+        device.on_network_frame(&mut first, Instant::from_millis(0));
+        assert_eq!(device.level(), 110);
+
+        device.next_network_key = Some((NETWORK_KEY, 1));
+        device.on_switch_key(&[nwk::CMD_SWITCH_KEY, 1]);
+
+        let mut after_rotation = secured_step(1, 0x11, 10);
+        device.on_network_frame(&mut after_rotation, Instant::from_millis(200));
+
+        assert_eq!(device.level(), 120);
     }
 }

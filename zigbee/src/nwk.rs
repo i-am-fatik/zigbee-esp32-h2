@@ -180,6 +180,42 @@ pub fn parse_rejoin_response(body: &[u8]) -> Option<RejoinResponse> {
 pub struct Unsecured {
     pub offset: usize,
     pub len: usize,
+    pub source: u64,
+    pub counter: u32,
+}
+
+pub const REPLAY_TABLE_SIZE: usize = 8;
+
+pub struct Replays {
+    highest: [Option<(u64, u32)>; REPLAY_TABLE_SIZE],
+    oldest: usize,
+}
+
+impl Default for Replays {
+    fn default() -> Self {
+        Self {
+            highest: [None; REPLAY_TABLE_SIZE],
+            oldest: 0,
+        }
+    }
+}
+
+impl Replays {
+    pub fn seen(&mut self, source: u64, counter: u32) -> bool {
+        for (sender, highest) in self.highest.iter_mut().flatten() {
+            if *sender != source {
+                continue;
+            }
+            if counter <= *highest {
+                return true;
+            }
+            *highest = counter;
+            return false;
+        }
+        self.highest[self.oldest] = Some((source, counter));
+        self.oldest = (self.oldest + 1) % REPLAY_TABLE_SIZE;
+        false
+    }
 }
 
 /// Decrypts a secured network frame in place. `frame` holds the whole network
@@ -220,5 +256,7 @@ pub fn unsecure(frame: &mut [u8], aux_start: usize, key: &[u8; KEY_LEN]) -> Opti
     Some(Unsecured {
         offset: authenticated_len,
         len: payload_end - authenticated_len,
+        source,
+        counter,
     })
 }
