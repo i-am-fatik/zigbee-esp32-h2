@@ -3,6 +3,29 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.5 - 2026-09-02
+
+### Added
+
+- `Device::receive_with_quality`, which takes the link quality the radio
+  measured alongside the frame. `Device::receive` stands and picks a parent on
+  hop count alone.
+- `Credentials::parent`, the router the device joined through.
+
+### Fixed
+
+- A scan settles on the parent it hears best rather than the first one to
+  answer, so a device no longer attaches across a link too weak to carry a
+  command and pay the coordinator's retry timer on every one.
+- A restored device asks its stored parent to take it back, so a parent that
+  dropped it while it was off no longer swallows everything sent to it.
+- A firmware query nobody answers backs off instead of repeating every few
+  seconds for as long as the device is awake.
+
+### Changed
+
+- The package ships the library alone, without the test directory.
+
 ## 0.1.4 - 2026-08-25
 
 ### Added

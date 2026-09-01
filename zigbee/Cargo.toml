@@ -1,6 +1,6 @@
 [package]
 name = "zigbee-rs"
-version = "0.1.4"
+version = "0.1.5"
 description = "A sans-io Zigbee end device stack for no_std targets"
 categories = ["embedded", "network-programming", "no-std"]
 keywords = ["zigbee", "ieee802154", "embedded", "no-std"]
