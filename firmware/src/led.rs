@@ -215,8 +215,6 @@ mod addressable {
 
 #[cfg(feature = "xiao-esp32c6")]
 mod plain {
-    extern crate alloc;
-
     use alloc::boxed::Box;
     use esp_hal::gpio::{DriveMode, OutputPin};
     use esp_hal::ledc::channel::{self, ChannelIFace};
@@ -224,32 +222,45 @@ mod plain {
     use esp_hal::ledc::{LSGlobalClkSource, Ledc, LowSpeed};
     use esp_hal::peripherals::LEDC;
     use esp_hal::time::Rate;
+    use zigbee::MAX_LEVEL;
 
-    const FULL: u32 = zigbee::MAX_LEVEL as u32;
+    const PWM_FREQUENCY_KHZ: u32 = 2;
     const FAINTEST_VISIBLE_PERCENT: u8 = 1;
 
-    /// The single-colour LED the XIAO boards carry, lit by pulling its pin
-    /// low. It is dimmed with PWM, so it follows the brightness of the light
-    /// and not only whether it is on.
+    fn kept_for_the_program<T>(value: T) -> &'static mut T {
+        Box::leak(Box::new(value))
+    }
+
+    fn perceived_percent(level: u8) -> u8 {
+        let level = level as u32;
+        let full = MAX_LEVEL as u32;
+        let percent = (level * level * 100 / (full * full)) as u8;
+        if level == 0 {
+            0
+        } else {
+            percent.max(FAINTEST_VISIBLE_PERCENT)
+        }
+    }
+
     pub struct PlainLed<'a> {
         channel: channel::Channel<'a, LowSpeed>,
         shown: Option<u8>,
     }
 
     impl<'a> PlainLed<'a> {
-        pub fn new(ledc: LEDC<'a>, pin: impl OutputPin + 'a) -> Option<Self> {
+        pub fn new(ledc: LEDC<'static>, pin: impl OutputPin + 'static) -> Option<Self> {
             let mut ledc = Ledc::new(ledc);
             ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
-            let ledc: &'a Ledc<'a> = Box::leak(Box::new(ledc));
+            let ledc = kept_for_the_program(ledc);
             let mut timer = ledc.timer::<LowSpeed>(timer::Number::Timer0);
             timer
                 .configure(timer::config::Config {
                     duty: timer::config::Duty::Duty8Bit,
                     clock_source: timer::LSClockSource::APBClk,
-                    frequency: Rate::from_khz(2),
+                    frequency: Rate::from_khz(PWM_FREQUENCY_KHZ),
                 })
                 .ok()?;
-            let timer: &'a timer::Timer<'a, LowSpeed> = Box::leak(Box::new(timer));
+            let timer = kept_for_the_program(timer);
             let mut channel = ledc.channel(channel::Number::Channel0, pin);
             channel
                 .configure(channel::config::Config {
@@ -264,19 +275,13 @@ mod plain {
             })
         }
 
-        /// Shows a brightness from 0 (dark) to `MAX_LEVEL`; the eye sees
-        /// duty squared as even steps, so the level is squared first.
         pub fn show(&mut self, level: u8) {
             if self.shown == Some(level) {
                 return;
             }
-            let level = level as u32;
-            let mut lit_percent = (level * level * 100 / (FULL * FULL)) as u8;
-            if level > 0 {
-                lit_percent = lit_percent.max(FAINTEST_VISIBLE_PERCENT);
-            }
-            if self.channel.set_duty(100 - lit_percent).is_ok() {
-                self.shown = Some(level as u8);
+            let pin_high_percent = 100 - perceived_percent(level);
+            if self.channel.set_duty(pin_high_percent).is_ok() {
+                self.shown = Some(level);
             }
         }
     }

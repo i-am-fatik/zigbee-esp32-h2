@@ -47,29 +47,27 @@ const FIRMWARE_VERSION: u32 = 0x0000_0001;
 const BLINK_MS: u32 = 300;
 const IDENTIFY_BLINK_MS: u32 = 120;
 
-/// The XIAO ESP32C6 routes its radio through a switch that is off until
-/// GPIO3 is held low; GPIO14 low then picks the on-board ceramic antenna over
-/// the external connector. With the switch off the board hears the network
-/// twenty decibels weaker and its own frames barely leave it.
 #[cfg(feature = "xiao-esp32c6")]
 mod xiao {
     use esp_hal::gpio::{Level, Output, OutputConfig, OutputPin};
 
-    pub struct Antenna<'a> {
-        _switch: Output<'a>,
-        _selection: Output<'a>,
+    const SWITCH_SETTLE_MS: u32 = 100;
+
+    pub struct CeramicAntenna<'a> {
+        _rf_switch_powered_low: Output<'a>,
+        _ceramic_selected_low: Output<'a>,
     }
 
     pub fn ceramic_antenna<'a>(
-        switch: impl OutputPin + 'a,
-        selection: impl OutputPin + 'a,
-    ) -> Antenna<'a> {
-        let switch = Output::new(switch, Level::Low, OutputConfig::default());
-        esp_hal::delay::Delay::new().delay_millis(100);
-        let selection = Output::new(selection, Level::Low, OutputConfig::default());
-        Antenna {
-            _switch: switch,
-            _selection: selection,
+        rf_switch_power: impl OutputPin + 'a,
+        antenna_select: impl OutputPin + 'a,
+    ) -> CeramicAntenna<'a> {
+        let powered = Output::new(rf_switch_power, Level::Low, OutputConfig::default());
+        esp_hal::delay::Delay::new().delay_millis(SWITCH_SETTLE_MS);
+        let selected = Output::new(antenna_select, Level::Low, OutputConfig::default());
+        CeramicAntenna {
+            _rf_switch_powered_low: powered,
+            _ceramic_selected_low: selected,
         }
     }
 }
@@ -80,8 +78,6 @@ fn our_extended_address() -> u64 {
     u64::from_be_bytes([mac[0], mac[1], mac[2], 0xff, 0xfe, mac[3], mac[4], mac[5]])
 }
 
-/// What the board's LED is showing right now, which is the whole of what the
-/// device says about itself without a coordinator to ask.
 #[cfg(feature = "xiao-esp32c6")]
 fn plain_level(device: &Device, blink_lit: bool) -> u8 {
     if device.identifying() {
