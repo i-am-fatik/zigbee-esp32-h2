@@ -11,6 +11,15 @@ pub const CMD_LEAVE: u8 = 0x04;
 pub const CMD_SWITCH_KEY: u8 = 0x05;
 pub const CMD_REJOIN_REQUEST: u8 = 0x06;
 pub const CMD_REJOIN_RESPONSE: u8 = 0x07;
+pub const CMD_END_DEVICE_TIMEOUT_REQUEST: u8 = 0x0b;
+pub const CMD_END_DEVICE_TIMEOUT_RESPONSE: u8 = 0x0c;
+
+pub const TIMEOUT_FOUR_MINUTES: u8 = 2;
+pub const NO_END_DEVICE_CONFIGURATION: u8 = 0x00;
+
+pub const TIMEOUT_ACCEPTED: u8 = 0x00;
+pub const PARENT_KEEPS_TIME_BY_POLL: u8 = 1 << 0;
+pub const PARENT_KEEPS_TIME_BY_REQUEST: u8 = 1 << 1;
 
 pub const DEFAULT_RADIUS: u8 = 30;
 
@@ -174,6 +183,22 @@ pub fn parse_rejoin_response(body: &[u8]) -> Option<RejoinResponse> {
     Some(RejoinResponse {
         short_address: r.u16()?,
         status: r.u8()?,
+    })
+}
+
+pub struct EndDeviceTimeoutResponse {
+    pub status: u8,
+    pub parent_information: u8,
+}
+
+pub fn parse_end_device_timeout_response(body: &[u8]) -> Option<EndDeviceTimeoutResponse> {
+    let mut r = Reader::new(body);
+    if r.u8()? != CMD_END_DEVICE_TIMEOUT_RESPONSE {
+        return None;
+    }
+    Some(EndDeviceTimeoutResponse {
+        status: r.u8()?,
+        parent_information: r.u8()?,
     })
 }
 

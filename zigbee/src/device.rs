@@ -570,6 +570,7 @@ pub struct Device {
     zdo_seq: u8,
     duplicates: aps::Duplicates,
     replays: nwk::Replays,
+    parent_keepalive: u8,
     identifying: bool,
     firmware: ota::State,
     firmware_block: ota::Block,
@@ -617,6 +618,7 @@ impl Device {
             zdo_seq: 0,
             duplicates: aps::Duplicates::default(),
             replays: nwk::Replays::default(),
+            parent_keepalive: nwk::PARENT_KEEPS_TIME_BY_POLL,
             identifying: false,
             firmware: ota::State::default(),
             firmware_block: ota::Block::default(),
@@ -672,8 +674,7 @@ impl Device {
             self.drive_firmware(now);
             if now.reached(self.next_keepalive) {
                 self.next_keepalive = now.plus_millis(KEEPALIVE_MS);
-                let parent = mac::Addr::Short(self.parent);
-                self.send_data_request(self.radio.pan_id, parent);
+                self.send_keepalive();
             }
             return;
         }
@@ -1349,6 +1350,75 @@ impl Device {
         self.enqueue(frame, true);
     }
 
+    fn on_end_device_timeout(&mut self, body: &[u8]) {
+        let Some(response) = nwk::parse_end_device_timeout_response(body) else {
+            return;
+        };
+        if response.status != nwk::TIMEOUT_ACCEPTED {
+            return;
+        }
+        self.parent_keepalive = response.parent_information;
+    }
+
+    fn send_keepalive(&mut self) {
+        let watches_the_poll = self.parent_keepalive & nwk::PARENT_KEEPS_TIME_BY_POLL != 0;
+        let watches_the_request = self.parent_keepalive & nwk::PARENT_KEEPS_TIME_BY_REQUEST != 0;
+        if watches_the_request && !watches_the_poll {
+            self.send_end_device_timeout_request();
+            return;
+        }
+        let parent = mac::Addr::Short(self.parent);
+        self.send_data_request(self.radio.pan_id, parent);
+    }
+
+    fn send_end_device_timeout_request(&mut self) {
+        let Some(key) = self.network_key else {
+            return;
+        };
+
+        let mut buffer = [0u8; mac::MAX_FRAME_LEN];
+        let mac_seq = self.next_mac_seq();
+        let ieee = self.config.ieee;
+        let mut out = Writer::new(&mut buffer);
+        mac::data(
+            &mut out,
+            mac_seq,
+            self.radio.pan_id,
+            mac::Addr::Short(self.parent),
+            mac::Addr::Short(self.radio.short_address),
+            true,
+        );
+
+        self.nwk_seq = self.nwk_seq.wrapping_add(1);
+        self.counter = self.counter.wrapping_add(1);
+        let payload = [
+            nwk::CMD_END_DEVICE_TIMEOUT_REQUEST,
+            nwk::TIMEOUT_FOUR_MINUTES,
+            nwk::NO_END_DEVICE_CONFIGURATION,
+        ];
+        nwk::build_secured(
+            &mut out,
+            nwk::Header {
+                frame_type: nwk::FRAME_TYPE_COMMAND,
+                dst: self.parent,
+                src: self.radio.short_address,
+                radius: 1,
+                seq: self.nwk_seq,
+                src_ieee: Some(ieee),
+            },
+            &key,
+            self.key_sequence,
+            self.counter,
+            ieee,
+            &payload,
+        );
+
+        let Some(frame) = out.written() else {
+            return;
+        };
+        self.enqueue(frame, true);
+    }
+
     fn on_rejoin_response(&mut self, response: nwk::RejoinResponse, source: u16, now: Instant) {
         if !matches!(self.phase, Phase::Rejoining { .. }) {
             return;
@@ -1361,8 +1431,10 @@ impl Device {
         self.parent = source;
         self.consecutive_failures = 0;
         self.next_keepalive = now.plus_millis(KEEPALIVE_MS);
+        self.parent_keepalive = nwk::PARENT_KEEPS_TIME_BY_POLL;
         self.phase = Phase::Joined;
         self.remember();
+        self.send_end_device_timeout_request();
         self.announce();
         let short_address = self.radio.short_address;
         self.ask_for_firmware(now);
@@ -1374,6 +1446,7 @@ impl Device {
         self.radio.short_address = UNASSIGNED;
         self.network_key = None;
         self.replays = nwk::Replays::default();
+        self.parent_keepalive = nwk::PARENT_KEEPS_TIME_BY_POLL;
         self.counter = 0;
         self.counter_persisted = 0;
         self.phase = Phase::Scanning {
@@ -1506,6 +1579,9 @@ impl Device {
                         self.on_rejoin_response(response, source, now);
                     }
                 }
+                Some(&nwk::CMD_END_DEVICE_TIMEOUT_RESPONSE) => {
+                    self.on_end_device_timeout(payload);
+                }
                 _ => {}
             }
             return;
@@ -1601,6 +1677,7 @@ impl Device {
         self.key_sequence = transport.key_sequence;
         self.phase = Phase::Joined;
         self.remember();
+        self.send_end_device_timeout_request();
         self.announce();
         let short_address = self.radio.short_address;
         self.ask_for_firmware(now);
@@ -1826,6 +1903,56 @@ mod tests {
 
         assert!(!device.joined());
     }
+
+    fn queued(device: &mut Device) -> std::vec::Vec<std::vec::Vec<u8>> {
+        let mut frames = std::vec::Vec::new();
+        while let Some(outgoing) = device.next_transmission() {
+            frames.push(outgoing.frame.to_vec());
+        }
+        frames
+    }
+
+    fn network_command(frame: &[u8], key: &[u8; KEY_LEN]) -> Option<u8> {
+        let parsed = mac::parse(frame)?;
+        if parsed.frame_type != mac::FRAME_TYPE_DATA {
+            return None;
+        }
+        let mut network = [0u8; mac::MAX_FRAME_LEN];
+        let len = parsed.payload.len();
+        network[..len].copy_from_slice(parsed.payload);
+        let network = &mut network[..len];
+
+        let header = nwk::parse(network)?;
+        if header.frame_type != nwk::FRAME_TYPE_COMMAND {
+            return None;
+        }
+        let unsecured = nwk::unsecure(network, header.header_len, key)?;
+        network.get(unsecured.offset).copied()
+    }
+
+    #[test]
+    fn an_accepted_rejoin_asks_the_new_parent_to_hold_the_child_entry() {
+        let mut device = rejoining();
+        queued(&mut device);
+
+        device.on_rejoin_response(
+            nwk::RejoinResponse {
+                short_address: 0x7ace,
+                status: REJOIN_ACCEPTED,
+            },
+            0x5678,
+            Instant::from_millis(100),
+        );
+
+        let asked = queued(&mut device).iter().any(|frame| {
+            network_command(frame, &[0x11; KEY_LEN]) == Some(nwk::CMD_END_DEVICE_TIMEOUT_REQUEST)
+        });
+        assert!(
+            asked,
+            "a parent left to its own default may age the device out"
+        );
+    }
+
     const NETWORK_KEY: [u8; KEY_LEN] = [0x5a; KEY_LEN];
     const COORDINATOR_IEEE: u64 = 0x57c3_ec80_bbff_440a;
     const LEVEL_STEP: u8 = 0x02;
@@ -1904,6 +2031,46 @@ mod tests {
         device.on_network_frame(&mut second, Instant::from_millis(100));
 
         assert_eq!(device.level(), 120);
+    }
+
+    fn keepalive_of(device: &mut Device) -> Option<u16> {
+        device.next_keepalive = Instant::from_millis(0);
+        device.tick(Instant::from_millis(1));
+        let frame = queued(device).pop()?;
+        Some(mac::parse(&frame)?.frame_type)
+    }
+
+    #[test]
+    fn a_keepalive_is_a_poll_until_a_parent_says_otherwise() {
+        let mut device = light_on_a_network(100);
+
+        assert_eq!(keepalive_of(&mut device), Some(mac::FRAME_TYPE_COMMAND));
+    }
+
+    #[test]
+    fn a_parent_that_watches_only_the_request_gets_one_instead_of_a_poll() {
+        let mut device = light_on_a_network(100);
+
+        device.on_end_device_timeout(&[
+            nwk::CMD_END_DEVICE_TIMEOUT_RESPONSE,
+            nwk::TIMEOUT_ACCEPTED,
+            nwk::PARENT_KEEPS_TIME_BY_REQUEST,
+        ]);
+
+        assert_eq!(keepalive_of(&mut device), Some(mac::FRAME_TYPE_DATA));
+    }
+
+    #[test]
+    fn a_parent_that_refused_the_timeout_still_gets_a_poll() {
+        let mut device = light_on_a_network(100);
+
+        device.on_end_device_timeout(&[
+            nwk::CMD_END_DEVICE_TIMEOUT_RESPONSE,
+            0x01,
+            nwk::PARENT_KEEPS_TIME_BY_REQUEST,
+        ]);
+
+        assert_eq!(keepalive_of(&mut device), Some(mac::FRAME_TYPE_COMMAND));
     }
 
     #[test]
