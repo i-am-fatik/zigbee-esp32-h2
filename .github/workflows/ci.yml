@@ -56,6 +56,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo publish -p zigbee-rs --dry-run --target x86_64-unknown-linux-gnu
+      - name: the release carries no tests
+        run: |
+          set -euo pipefail
+          cargo package -p zigbee-rs --list --target x86_64-unknown-linux-gnu > packaged.txt
+          if grep -q '^tests/' packaged.txt; then
+            echo "the package would carry the tests"
+            exit 1
+          fi
 
   semver:
     runs-on: ubuntu-latest
