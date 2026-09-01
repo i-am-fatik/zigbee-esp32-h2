@@ -30,16 +30,6 @@ jobs:
       - run: cargo clippy --release
       - run: cargo build --release
 
-  firmware-against-source:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: riscv32imac-unknown-none-elf
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --config 'patch.crates-io.zigbee-rs.path="zigbee"'
-
   msrv:
     runs-on: ubuntu-latest
     steps:
@@ -69,10 +59,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-semver-checks
-      - run: cargo semver-checks -p zigbee-rs --target x86_64-unknown-linux-gnu
+      - run: cargo semver-checks -p zigbee-rs --baseline-rev zigbee-rs-0.1.4 --target x86_64-unknown-linux-gnu
 
   audit:
     runs-on: ubuntu-latest

@@ -2,6 +2,9 @@
 resolver = "2"
 members = ["zigbee", "firmware"]
 
+[patch.crates-io]
+zigbee-rs = { path = "zigbee" }
+
 [workspace.package]
 edition = "2021"
 license = "MIT OR Apache-2.0"
