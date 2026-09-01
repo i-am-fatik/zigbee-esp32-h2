@@ -5,17 +5,25 @@ use esp_hal::time::Rate;
 use esp_hal::Blocking;
 use zigbee::{COLOUR_TEMPERATURE_MIREDS, MAX_HUE};
 
-/// The RMT source clock the ESP32-H2 offers. One tick is 31.25 ns, which is
-/// what the bit timings below are counted in.
-const CLOCK: Rate = Rate::from_mhz(32);
+/// The RMT source clock differs per chip, so the bit timings are kept in
+/// nanoseconds and counted into ticks below.
+#[cfg(feature = "esp32h2")]
+const CLOCK_MHZ: u32 = 32;
+#[cfg(feature = "esp32c6")]
+const CLOCK_MHZ: u32 = 80;
+const CLOCK: Rate = Rate::from_mhz(CLOCK_MHZ);
 
-const T0_HIGH: u16 = 11;
-const T0_LOW: u16 = 29;
-const T1_HIGH: u16 = 22;
-const T1_LOW: u16 = 19;
+const fn ticks(nanoseconds: u32) -> u16 {
+    (nanoseconds * CLOCK_MHZ / 1000) as u16
+}
+
+const T0_HIGH: u16 = ticks(350);
+const T0_LOW: u16 = ticks(900);
+const T1_HIGH: u16 = ticks(700);
+const T1_LOW: u16 = ticks(600);
 
 /// A low period long enough for the LED to latch the colour it just received.
-const RESET: u16 = 9600;
+const RESET: u16 = ticks(300_000);
 
 const BITS: usize = 24;
 

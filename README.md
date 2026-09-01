@@ -10,9 +10,16 @@ Two crates. [`zigbee/`](zigbee) is the protocol stack, sans-io and portable.
 
 ```sh
 cargo build --release
-espflash flash --chip esp32h2 --port /dev/cu.usbmodem101 \
+espflash flash --port /dev/cu.usbmodem101 \
     --partition-table firmware/partitions.csv \
     target/riscv32imac-unknown-none-elf/release/zigbee-h2 --monitor
+```
+
+The ESP32-H2 is the default chip. The same firmware runs on an ESP32-C6,
+whose dev kit wires the LED and the button to the same pins:
+
+```sh
+cargo build --release -p zigbee-h2 --no-default-features --features esp32c6
 ```
 
 The partition table is not the default one. It carries two application slots so

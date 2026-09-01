@@ -5,15 +5,34 @@ description = "A Zigbee light on the ESP32-H2, running the zigbee-rs crate on ba
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["esp32h2"]
+esp32h2 = [
+    "esp-hal/esp32h2",
+    "esp-bootloader-esp-idf/esp32h2",
+    "esp-println/esp32h2",
+    "esp-backtrace/esp32h2",
+    "esp-radio/esp32h2",
+    "esp-storage/esp32h2",
+]
+esp32c6 = [
+    "esp-hal/esp32c6",
+    "esp-bootloader-esp-idf/esp32c6",
+    "esp-println/esp32c6",
+    "esp-backtrace/esp32c6",
+    "esp-radio/esp32c6",
+    "esp-storage/esp32c6",
+]
+
 [dependencies]
 zigbee-rs = "0.1"
-esp-hal = { version = "1.1.2", features = ["esp32h2", "unstable"] }
-esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32h2"] }
-esp-println = { version = "0.17.0", features = ["esp32h2", "log-04"] }
-esp-backtrace = { version = "0.19.0", features = ["esp32h2", "panic-handler", "println"] }
-esp-radio = { version = "1.0.0-beta.0", features = ["esp32h2", "ieee802154", "unstable"] }
+esp-hal = { version = "1.1.2", features = ["unstable"] }
+esp-bootloader-esp-idf = "0.5.0"
+esp-println = { version = "0.17.0", features = ["log-04"] }
+esp-backtrace = { version = "0.19.0", features = ["panic-handler", "println"] }
+esp-radio = { version = "1.0.0-beta.0", features = ["ieee802154", "unstable"] }
 esp-alloc = "0.10.0"
-esp-storage = { version = "0.9.0", features = ["esp32h2", "critical-section"] }
+esp-storage = { version = "0.9.0", features = ["critical-section"] }
 embedded-storage = "0.3.1"
 log = "0.4"
 
