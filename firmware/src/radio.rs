@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use esp_hal::time::{Duration, Instant};
-use esp_radio::ieee802154::{CcaMode, Config, Ieee802154, RawReceived};
+use esp_radio::ieee802154::{rssi_to_lqi, CcaMode, Config, Ieee802154, RawReceived};
 use zigbee::RadioConfig;
 use zigbee::MAX_FRAME_LEN;
 
@@ -132,6 +132,7 @@ impl<'a> Radio<'a> {
         }
         let len = psdu_len - FCS_LEN;
         into[..len].copy_from_slice(&data[1..1 + len]);
-        Some((len, data[psdu_len]))
+        let rssi = data[psdu_len - 1] as i8;
+        Some((len, rssi_to_lqi(rssi)))
     }
 }
