@@ -23,6 +23,7 @@ esp32c6 = [
     "esp-radio/esp32c6",
     "esp-storage/esp32c6",
 ]
+xiao-esp32c6 = ["esp32c6"]
 
 [dependencies]
 zigbee-rs = "0.1"

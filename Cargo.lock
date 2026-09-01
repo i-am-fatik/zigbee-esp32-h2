@@ -720,6 +720,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aebfabb2c21bec45e575e4f6cb6bb7aa8e1b33e7ac45b5dffa0f9d33ff59105"
 dependencies = [
  "document-features",
+ "object",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
@@ -770,7 +771,9 @@ dependencies = [
  "esp-hal",
  "esp-metadata-generated 0.4.0",
  "esp-sync",
+ "esp-wifi-sys-esp32c6",
  "esp-wifi-sys-esp32h2",
+ "esp32c6",
  "esp32h2",
 ]
 
@@ -812,7 +815,9 @@ dependencies = [
  "esp-radio-rtos-driver",
  "esp-rom-sys",
  "esp-sync",
+ "esp-wifi-sys-esp32c6",
  "esp-wifi-sys-esp32h2",
+ "esp32c6",
  "esp32h2",
  "heapless 0.9.3",
  "ieee802154",
@@ -854,6 +859,7 @@ dependencies = [
  "cfg-if",
  "document-features",
  "esp-metadata-generated 0.4.0",
+ "esp32c6",
  "esp32h2",
 ]
 
@@ -887,6 +893,12 @@ dependencies = [
  "riscv",
  "xtensa-lx",
 ]
+
+[[package]]
+name = "esp-wifi-sys-esp32c6"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57649401fc2f906a16e2268de88693724a125adcd0eba89b594a157affcee2d5"
 
 [[package]]
 name = "esp-wifi-sys-esp32h2"
@@ -1260,6 +1272,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

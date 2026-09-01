@@ -1,31 +1,9 @@
-use esp_hal::gpio::{Level, OutputPin};
-use esp_hal::peripherals::RMT;
-use esp_hal::rmt::{Channel, PulseCode, Rmt, Tx, TxChannelConfig, TxChannelCreator};
-use esp_hal::time::Rate;
-use esp_hal::Blocking;
+#[cfg(not(feature = "xiao-esp32c6"))]
+pub use addressable::AddressableLed;
+#[cfg(feature = "xiao-esp32c6")]
+pub use plain::PlainLed;
+
 use zigbee::{COLOUR_TEMPERATURE_MIREDS, MAX_HUE};
-
-/// The RMT source clock differs per chip, so the bit timings are kept in
-/// nanoseconds and counted into ticks below.
-#[cfg(feature = "esp32h2")]
-const CLOCK_MHZ: u32 = 32;
-#[cfg(feature = "esp32c6")]
-const CLOCK_MHZ: u32 = 80;
-const CLOCK: Rate = Rate::from_mhz(CLOCK_MHZ);
-
-const fn ticks(nanoseconds: u32) -> u16 {
-    (nanoseconds * CLOCK_MHZ / 1000) as u16
-}
-
-const T0_HIGH: u16 = ticks(350);
-const T0_LOW: u16 = ticks(900);
-const T1_HIGH: u16 = ticks(700);
-const T1_LOW: u16 = ticks(600);
-
-/// A low period long enough for the LED to latch the colour it just received.
-const RESET: u16 = ticks(300_000);
-
-const BITS: usize = 24;
 
 /// The whole hue circle, which is one step past the brightest hue because the
 /// range starts at zero.
@@ -129,67 +107,132 @@ impl Rgb {
             (mireds.clamp(coolest, warmest) - coolest) as u32 * 255 / (warmest - coolest) as u32;
         DAYLIGHT.blend(CANDLE, along as u8).dim(value)
     }
-
-    fn grb(self) -> u32 {
-        (self.green as u32) << 16 | (self.red as u32) << 8 | self.blue as u32
-    }
 }
 
-/// The single WS2812 style LED soldered to the development board.
-pub struct AddressableLed<'a> {
-    channel: Option<Channel<'a, Blocking, Tx>>,
-    shown: Option<Rgb>,
-}
+#[cfg(not(feature = "xiao-esp32c6"))]
+mod addressable {
+    use esp_hal::gpio::{Level, OutputPin};
+    use esp_hal::peripherals::RMT;
+    use esp_hal::rmt::{Channel, PulseCode, Rmt, Tx, TxChannelConfig, TxChannelCreator};
+    use esp_hal::time::Rate;
+    use esp_hal::Blocking;
 
-impl<'a> AddressableLed<'a> {
-    pub fn new(rmt: RMT<'a>, pin: impl OutputPin + 'a) -> Option<Self> {
-        let rmt = Rmt::new(rmt, CLOCK).ok()?;
-        let channel = rmt
-            .channel0
-            .configure_tx(
-                &TxChannelConfig::default()
-                    .with_clk_divider(1)
-                    .with_idle_output(true)
-                    .with_idle_output_level(Level::Low),
-            )
-            .ok()?
-            .with_pin(pin);
+    use super::Rgb;
 
-        Some(Self {
-            channel: Some(channel),
-            shown: None,
-        })
+    /// The RMT source clock differs per chip, so the bit timings are kept in
+    /// nanoseconds and counted into ticks below.
+    #[cfg(feature = "esp32h2")]
+    const CLOCK_MHZ: u32 = 32;
+    #[cfg(feature = "esp32c6")]
+    const CLOCK_MHZ: u32 = 80;
+    const CLOCK: Rate = Rate::from_mhz(CLOCK_MHZ);
+
+    const fn ticks(nanoseconds: u32) -> u16 {
+        (nanoseconds * CLOCK_MHZ / 1000) as u16
     }
 
-    pub fn show(&mut self, colour: Rgb) {
-        if self.shown == Some(colour) {
-            return;
+    const T0_HIGH: u16 = ticks(350);
+    const T0_LOW: u16 = ticks(900);
+    const T1_HIGH: u16 = ticks(700);
+    const T1_LOW: u16 = ticks(600);
+
+    /// A low period long enough for the LED to latch the colour it just received.
+    const RESET: u16 = ticks(300_000);
+
+    const BITS: usize = 24;
+
+    fn grb(colour: Rgb) -> u32 {
+        (colour.green as u32) << 16 | (colour.red as u32) << 8 | colour.blue as u32
+    }
+
+    /// The single WS2812 style LED soldered to the development board.
+    pub struct AddressableLed<'a> {
+        channel: Option<Channel<'a, Blocking, Tx>>,
+        shown: Option<Rgb>,
+    }
+
+    impl<'a> AddressableLed<'a> {
+        pub fn new(rmt: RMT<'a>, pin: impl OutputPin + 'a) -> Option<Self> {
+            let rmt = Rmt::new(rmt, CLOCK).ok()?;
+            let channel = rmt
+                .channel0
+                .configure_tx(
+                    &TxChannelConfig::default()
+                        .with_clk_divider(1)
+                        .with_idle_output(true)
+                        .with_idle_output_level(Level::Low),
+                )
+                .ok()?
+                .with_pin(pin);
+
+            Some(Self {
+                channel: Some(channel),
+                shown: None,
+            })
         }
 
-        let mut codes = [PulseCode::default(); BITS + 2];
-        let grb = colour.grb();
-        for (index, code) in codes[..BITS].iter_mut().enumerate() {
-            let bit_set = grb & (1 << (BITS - 1 - index)) != 0;
-            *code = if bit_set {
-                PulseCode::new(Level::High, T1_HIGH, Level::Low, T1_LOW)
-            } else {
-                PulseCode::new(Level::High, T0_HIGH, Level::Low, T0_LOW)
+        pub fn show(&mut self, colour: Rgb) {
+            if self.shown == Some(colour) {
+                return;
+            }
+
+            let mut codes = [PulseCode::default(); BITS + 2];
+            let grb = grb(colour);
+            for (index, code) in codes[..BITS].iter_mut().enumerate() {
+                let bit_set = grb & (1 << (BITS - 1 - index)) != 0;
+                *code = if bit_set {
+                    PulseCode::new(Level::High, T1_HIGH, Level::Low, T1_LOW)
+                } else {
+                    PulseCode::new(Level::High, T0_HIGH, Level::Low, T0_LOW)
+                };
+            }
+            codes[BITS] = PulseCode::new(Level::Low, RESET, Level::Low, 0);
+
+            let Some(channel) = self.channel.take() else {
+                return;
+            };
+            self.channel = match channel.transmit(&codes) {
+                Ok(transaction) => match transaction.wait() {
+                    Ok(channel) => {
+                        self.shown = Some(colour);
+                        Some(channel)
+                    }
+                    Err((_, channel)) => Some(channel),
+                },
+                Err((_, channel)) => Some(channel),
             };
         }
-        codes[BITS] = PulseCode::new(Level::Low, RESET, Level::Low, 0);
+    }
+}
 
-        let Some(channel) = self.channel.take() else {
-            return;
-        };
-        self.channel = match channel.transmit(&codes) {
-            Ok(transaction) => match transaction.wait() {
-                Ok(channel) => {
-                    self.shown = Some(colour);
-                    Some(channel)
-                }
-                Err((_, channel)) => Some(channel),
-            },
-            Err((_, channel)) => Some(channel),
-        };
+#[cfg(feature = "xiao-esp32c6")]
+mod plain {
+    use esp_hal::gpio::{Level, Output, OutputConfig, OutputPin};
+
+    use super::Rgb;
+
+    /// A single-colour LED wired to a GPIO and lit by pulling it low, which is
+    /// all the XIAO boards carry. It shows whether the light is on at all.
+    pub struct PlainLed<'a> {
+        pin: Output<'a>,
+        shown: Option<bool>,
+    }
+
+    impl<'a> PlainLed<'a> {
+        pub fn new(pin: impl OutputPin + 'a) -> Option<Self> {
+            Some(Self {
+                pin: Output::new(pin, Level::High, OutputConfig::default()),
+                shown: None,
+            })
+        }
+
+        pub fn show(&mut self, colour: Rgb) {
+            let lit = colour != Rgb::OFF;
+            if self.shown == Some(lit) {
+                return;
+            }
+            self.pin.set_level(if lit { Level::Low } else { Level::High });
+            self.shown = Some(lit);
+        }
     }
 }

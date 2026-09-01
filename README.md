@@ -22,6 +22,15 @@ whose dev kit wires the LED and the button to the same pins:
 cargo build --release -p zigbee-h2 --no-default-features --features esp32c6
 ```
 
+The Seeed XIAO ESP32C6 needs its own feature, `xiao-esp32c6`: its radio sits
+behind an RF switch that the firmware powers by holding GPIO3 low, with
+GPIO14 low selecting the on-board antenna, and its plain LED on GPIO15
+shows whether the light is on.
+
+```sh
+cargo build --release -p zigbee-h2 --no-default-features --features xiao-esp32c6
+```
+
 The partition table is not the default one. It carries two application slots so
 an image arriving over the air is written to the slot that is not running, and
 booted only once every byte of it landed. Passing it is required on every flash,

@@ -16,7 +16,11 @@ use esp_radio::ieee802154::Ieee802154;
 use zigbee::{Colour, Config, Device, Event, Instant};
 
 use button::Button;
-use led::{AddressableLed, Rgb};
+#[cfg(not(feature = "xiao-esp32c6"))]
+use led::AddressableLed;
+#[cfg(feature = "xiao-esp32c6")]
+use led::PlainLed;
+use led::Rgb;
 use radio::Radio;
 use store::Store;
 
@@ -35,6 +39,33 @@ const FIRMWARE_VERSION: u32 = 0x0000_0001;
 
 const BLINK_MS: u32 = 300;
 const IDENTIFY_BLINK_MS: u32 = 120;
+
+/// The XIAO ESP32C6 routes its radio through a switch that is off until
+/// GPIO3 is held low; GPIO14 low then picks the on-board ceramic antenna over
+/// the external connector. With the switch off the board hears the network
+/// twenty decibels weaker and its own frames barely leave it.
+#[cfg(feature = "xiao-esp32c6")]
+mod xiao {
+    use esp_hal::gpio::{Level, Output, OutputConfig, OutputPin};
+
+    pub struct Antenna<'a> {
+        _switch: Output<'a>,
+        _selection: Output<'a>,
+    }
+
+    pub fn ceramic_antenna<'a>(
+        switch: impl OutputPin + 'a,
+        selection: impl OutputPin + 'a,
+    ) -> Antenna<'a> {
+        let switch = Output::new(switch, Level::Low, OutputConfig::default());
+        esp_hal::delay::Delay::new().delay_millis(100);
+        let selection = Output::new(selection, Level::Low, OutputConfig::default());
+        Antenna {
+            _switch: switch,
+            _selection: selection,
+        }
+    }
+}
 
 fn our_extended_address() -> u64 {
     let mac = esp_hal::efuse::base_mac_address();
@@ -114,6 +145,11 @@ fn main() -> ! {
     }
     println!("boot: zigbee end device, eui64 {:016x}", ieee);
 
+    #[cfg(feature = "xiao-esp32c6")]
+    let _antenna = xiao::ceramic_antenna(peripherals.GPIO3, peripherals.GPIO14);
+    #[cfg(feature = "xiao-esp32c6")]
+    let mut led = PlainLed::new(peripherals.GPIO15);
+    #[cfg(not(feature = "xiao-esp32c6"))]
     let mut led = AddressableLed::new(peripherals.RMT, peripherals.GPIO8);
     let mut button = Button::new(peripherals.GPIO9, now());
     let mut tuning = device.radio();
