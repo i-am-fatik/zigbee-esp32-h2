@@ -327,6 +327,37 @@ fn credentials_survive_a_round_trip_through_storage() {
     assert_eq!(device.radio().pan_id, PAN);
 }
 
+#[test]
+fn a_restored_device_asks_its_stored_parent_to_take_it_back() {
+    let mut device = device();
+    device.tick(Instant::from_millis(0));
+    drain(&mut device);
+    device.receive(&beacon(true), Instant::from_millis(10));
+    device.tick(Instant::from_millis(260));
+    drain(&mut device);
+    device.receive(ASSOCIATION_RESPONSE, Instant::from_millis(270));
+    drain(&mut device);
+    device.receive(&deliver_unsecured(TRANSPORT_KEY), Instant::from_millis(280));
+
+    let saved = events(&mut device)
+        .into_iter()
+        .find_map(|event| match event {
+            Event::CredentialsChanged(credentials) => Some(credentials),
+            _ => None,
+        })
+        .expect("joining emits credentials");
+    let parent = saved.parent();
+
+    let mut restored = Device::restore(Config::new(OUR_IEEE), saved);
+    let frames = drain(&mut restored);
+
+    assert_eq!(
+        u16::from_le_bytes([frames[0][5], frames[0][6]]),
+        parent,
+        "a parent that forgot the device while it was off would never answer it again"
+    );
+}
+
 fn joined_device() -> Device {
     let mut device = device();
     device.tick(Instant::from_millis(0));

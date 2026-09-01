@@ -643,6 +643,7 @@ impl Device {
         device.counter = credentials.counter;
         device.counter_persisted = credentials.counter;
         device.phase = Phase::Joined;
+        device.send_rejoin_request(mac::Addr::Short(credentials.parent));
         device.announce();
         device
     }
