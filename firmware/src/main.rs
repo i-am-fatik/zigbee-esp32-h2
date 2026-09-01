@@ -13,23 +13,30 @@ use esp_hal::main;
 use esp_hal::time::Instant as HalInstant;
 use esp_println::{print, println};
 use esp_radio::ieee802154::Ieee802154;
-use zigbee::{Colour, Config, Device, Event, Instant};
+#[cfg(not(feature = "xiao-esp32c6"))]
+use zigbee::Colour;
+use zigbee::{Config, Device, Event, Instant};
 
 use button::Button;
 #[cfg(not(feature = "xiao-esp32c6"))]
 use led::AddressableLed;
 #[cfg(feature = "xiao-esp32c6")]
 use led::PlainLed;
+#[cfg(not(feature = "xiao-esp32c6"))]
 use led::Rgb;
 use radio::Radio;
 use store::Store;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
+#[cfg(not(feature = "xiao-esp32c6"))]
 const SEARCHING: Rgb = Rgb::new(0, 0, 60);
+#[cfg(not(feature = "xiao-esp32c6"))]
 const IDLE_ON_NETWORK: Rgb = Rgb::new(0, 40, 0);
-
+#[cfg(not(feature = "xiao-esp32c6"))]
 const IDENTIFYING: Rgb = Rgb::new(255, 255, 255);
+#[cfg(feature = "xiao-esp32c6")]
+const SEARCHING_LEVEL: u8 = 40;
 
 /// What the upgrade server is told this device is running. Bump the version
 /// when releasing an image, or a server with a newer one will not offer it.
@@ -75,6 +82,24 @@ fn our_extended_address() -> u64 {
 
 /// What the board's LED is showing right now, which is the whole of what the
 /// device says about itself without a coordinator to ask.
+#[cfg(feature = "xiao-esp32c6")]
+fn plain_level(device: &Device, blink_lit: bool) -> u8 {
+    if device.identifying() {
+        return if blink_lit { zigbee::MAX_LEVEL } else { 0 };
+    }
+    if !device.joined() {
+        return if blink_lit { SEARCHING_LEVEL } else { 0 };
+    }
+    if device.on_off() {
+        device.level()
+    } else {
+        0
+    }
+}
+
+/// What the board's LED is showing right now, which is the whole of what the
+/// device says about itself without a coordinator to ask.
+#[cfg(not(feature = "xiao-esp32c6"))]
 fn indicator(device: &Device, blink_lit: bool) -> Rgb {
     if device.identifying() {
         return if blink_lit {
@@ -148,7 +173,7 @@ fn main() -> ! {
     #[cfg(feature = "xiao-esp32c6")]
     let _antenna = xiao::ceramic_antenna(peripherals.GPIO3, peripherals.GPIO14);
     #[cfg(feature = "xiao-esp32c6")]
-    let mut led = PlainLed::new(peripherals.GPIO15);
+    let mut led = PlainLed::new(peripherals.LEDC, peripherals.GPIO15);
     #[cfg(not(feature = "xiao-esp32c6"))]
     let mut led = AddressableLed::new(peripherals.RMT, peripherals.GPIO8);
     let mut button = Button::new(peripherals.GPIO9, now());
@@ -259,6 +284,9 @@ fn main() -> ! {
         }
 
         if let Some(led) = led.as_mut() {
+            #[cfg(feature = "xiao-esp32c6")]
+            led.show(plain_level(&device, blink_lit));
+            #[cfg(not(feature = "xiao-esp32c6"))]
             led.show(indicator(&device, blink_lit));
         }
     }

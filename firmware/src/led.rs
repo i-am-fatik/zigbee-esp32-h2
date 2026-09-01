@@ -3,21 +3,28 @@ pub use addressable::AddressableLed;
 #[cfg(feature = "xiao-esp32c6")]
 pub use plain::PlainLed;
 
+#[cfg(not(feature = "xiao-esp32c6"))]
 use zigbee::{COLOUR_TEMPERATURE_MIREDS, MAX_HUE};
 
+#[cfg(not(feature = "xiao-esp32c6"))]
 /// The whole hue circle, which is one step past the brightest hue because the
 /// range starts at zero.
 const WHEEL: u16 = MAX_HUE as u16 + 1;
 
+#[cfg(not(feature = "xiao-esp32c6"))]
 const XY_ONE: i64 = 65_536;
 
+#[cfg(not(feature = "xiao-esp32c6"))]
 const DAYLIGHT: Rgb = Rgb::new(201, 226, 255);
+#[cfg(not(feature = "xiao-esp32c6"))]
 const CANDLE: Rgb = Rgb::new(255, 157, 63);
 
+#[cfg(not(feature = "xiao-esp32c6"))]
 const fn mix(from: u8, to: u8, towards: u8) -> u8 {
     ((from as u16 * (255 - towards as u16) + to as u16 * towards as u16) / 255) as u8
 }
 
+#[cfg(not(feature = "xiao-esp32c6"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Rgb {
     pub red: u8,
@@ -25,6 +32,7 @@ pub struct Rgb {
     pub blue: u8,
 }
 
+#[cfg(not(feature = "xiao-esp32c6"))]
 impl Rgb {
     pub const OFF: Rgb = Rgb::new(0, 0, 0);
 
@@ -207,32 +215,69 @@ mod addressable {
 
 #[cfg(feature = "xiao-esp32c6")]
 mod plain {
-    use esp_hal::gpio::{Level, Output, OutputConfig, OutputPin};
+    extern crate alloc;
 
-    use super::Rgb;
+    use alloc::boxed::Box;
+    use esp_hal::gpio::{DriveMode, OutputPin};
+    use esp_hal::ledc::channel::{self, ChannelIFace};
+    use esp_hal::ledc::timer::{self, TimerIFace};
+    use esp_hal::ledc::{LSGlobalClkSource, Ledc, LowSpeed};
+    use esp_hal::peripherals::LEDC;
+    use esp_hal::time::Rate;
 
-    /// A single-colour LED wired to a GPIO and lit by pulling it low, which is
-    /// all the XIAO boards carry. It shows whether the light is on at all.
+    const FULL: u32 = zigbee::MAX_LEVEL as u32;
+    const FAINTEST_VISIBLE_PERCENT: u8 = 1;
+
+    /// The single-colour LED the XIAO boards carry, lit by pulling its pin
+    /// low. It is dimmed with PWM, so it follows the brightness of the light
+    /// and not only whether it is on.
     pub struct PlainLed<'a> {
-        pin: Output<'a>,
-        shown: Option<bool>,
+        channel: channel::Channel<'a, LowSpeed>,
+        shown: Option<u8>,
     }
 
     impl<'a> PlainLed<'a> {
-        pub fn new(pin: impl OutputPin + 'a) -> Option<Self> {
+        pub fn new(ledc: LEDC<'a>, pin: impl OutputPin + 'a) -> Option<Self> {
+            let mut ledc = Ledc::new(ledc);
+            ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
+            let ledc: &'a Ledc<'a> = Box::leak(Box::new(ledc));
+            let mut timer = ledc.timer::<LowSpeed>(timer::Number::Timer0);
+            timer
+                .configure(timer::config::Config {
+                    duty: timer::config::Duty::Duty8Bit,
+                    clock_source: timer::LSClockSource::APBClk,
+                    frequency: Rate::from_khz(2),
+                })
+                .ok()?;
+            let timer: &'a timer::Timer<'a, LowSpeed> = Box::leak(Box::new(timer));
+            let mut channel = ledc.channel(channel::Number::Channel0, pin);
+            channel
+                .configure(channel::config::Config {
+                    timer,
+                    duty_pct: 100,
+                    drive_mode: DriveMode::PushPull,
+                })
+                .ok()?;
             Some(Self {
-                pin: Output::new(pin, Level::High, OutputConfig::default()),
+                channel,
                 shown: None,
             })
         }
 
-        pub fn show(&mut self, colour: Rgb) {
-            let lit = colour != Rgb::OFF;
-            if self.shown == Some(lit) {
+        /// Shows a brightness from 0 (dark) to `MAX_LEVEL`; the eye sees
+        /// duty squared as even steps, so the level is squared first.
+        pub fn show(&mut self, level: u8) {
+            if self.shown == Some(level) {
                 return;
             }
-            self.pin.set_level(if lit { Level::Low } else { Level::High });
-            self.shown = Some(lit);
+            let level = level as u32;
+            let mut lit_percent = (level * level * 100 / (FULL * FULL)) as u8;
+            if level > 0 {
+                lit_percent = lit_percent.max(FAINTEST_VISIBLE_PERCENT);
+            }
+            if self.channel.set_duty(100 - lit_percent).is_ok() {
+                self.shown = Some(level as u8);
+            }
         }
     }
 }
