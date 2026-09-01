@@ -44,7 +44,7 @@ cargo test -p zigbee-rs --target aarch64-apple-darwin
 
 The stack has no hardware in its dependencies, so its tests run on the host.
 They replay a full join exchange, including a trust centre's encrypted
-encrypted network key.
+network key.
 
 ## The library
 

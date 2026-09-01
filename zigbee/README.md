@@ -103,7 +103,7 @@ the difference is worth knowing before you depend on this.
 
 The hand-written half has never been audited. It matches the specification and
 it decrypts a full transport-key exchange, which is evidence that it is
-is correct and no evidence at all that it resists a side channel.
+correct and no evidence at all that it resists a side channel.
 
 ## The name
 
