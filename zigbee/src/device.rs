@@ -568,6 +568,7 @@ pub struct Device {
     nwk_seq: u8,
     aps_counter: u8,
     zdo_seq: u8,
+    duplicates: aps::Duplicates,
     identifying: bool,
     firmware: ota::State,
     firmware_block: ota::Block,
@@ -613,6 +614,7 @@ impl Device {
             nwk_seq: 0,
             aps_counter: 0,
             zdo_seq: 0,
+            duplicates: aps::Duplicates::default(),
             identifying: false,
             firmware: ota::State::default(),
             firmware_block: ota::Block::default(),
@@ -1606,6 +1608,9 @@ impl Device {
         now: Instant,
     ) {
         if let Some(group) = request.group {
+            if self.duplicates.seen(source, request.counter) {
+                return;
+            }
             if self.application.in_group(group) {
                 self.on_cluster_request(source, false, request, now);
             }
@@ -1614,6 +1619,9 @@ impl Device {
 
         if request.ack_request && !broadcast {
             self.acknowledge(source, request);
+        }
+        if self.duplicates.seen(source, request.counter) {
+            return;
         }
 
         match request.profile {

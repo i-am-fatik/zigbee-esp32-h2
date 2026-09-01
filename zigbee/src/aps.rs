@@ -130,6 +130,33 @@ pub fn parse(input: &[u8]) -> Option<Frame<'_>> {
     }
 }
 
+pub const DUPLICATE_TABLE_SIZE: usize = 8;
+
+pub struct Duplicates {
+    recent: [Option<(u16, u8)>; DUPLICATE_TABLE_SIZE],
+    oldest: usize,
+}
+
+impl Default for Duplicates {
+    fn default() -> Self {
+        Self {
+            recent: [None; DUPLICATE_TABLE_SIZE],
+            oldest: 0,
+        }
+    }
+}
+
+impl Duplicates {
+    pub fn seen(&mut self, source: u16, counter: u8) -> bool {
+        if self.recent.contains(&Some((source, counter))) {
+            return true;
+        }
+        self.recent[self.oldest] = Some((source, counter));
+        self.oldest = (self.oldest + 1) % DUPLICATE_TABLE_SIZE;
+        false
+    }
+}
+
 fn nonce(source: u64, counter: u32, security_control: u8) -> [u8; NONCE_LEN] {
     let mut nonce = [0u8; NONCE_LEN];
     nonce[0..8].copy_from_slice(&source.to_le_bytes());

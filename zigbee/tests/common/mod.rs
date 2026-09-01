@@ -2,11 +2,19 @@
 
 #![allow(dead_code)]
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use zigbee::{Config, Device, Event, Instant, APPLICATION, CLUSTER_GROUPS, CLUSTER_SCENES};
 
 pub const OUR_IEEE: u64 = 0x0011_2233_4455_6677;
 pub const PAN: u16 = 0xa269;
 pub const OUR_SHORT: u16 = 0x4560;
+
+static SENT: AtomicU8 = AtomicU8::new(0);
+
+pub fn next_counter() -> u8 {
+    SENT.fetch_add(1, Ordering::Relaxed)
+}
 
 pub fn device() -> Device {
     Device::new(Config::new(OUR_IEEE))
@@ -48,7 +56,7 @@ pub fn application_frame(cluster: u16, payload: &[u8]) -> Vec<u8> {
     let mut frame = vec![0x00, APPLICATION.endpoint];
     frame.extend_from_slice(&cluster.to_le_bytes());
     frame.extend_from_slice(&APPLICATION.profile.to_le_bytes());
-    frame.extend_from_slice(&[0x01, 0x07]);
+    frame.extend_from_slice(&[0x01, next_counter()]);
     frame.extend_from_slice(payload);
     frame
 }
@@ -125,7 +133,7 @@ pub fn group_command(group: u16, cluster: u16, seq: u8, id: u8, arguments: &[u8]
     application.extend_from_slice(&group.to_le_bytes());
     application.extend_from_slice(&cluster.to_le_bytes());
     application.extend_from_slice(&APPLICATION.profile.to_le_bytes());
-    application.extend_from_slice(&[0x01, 0x07]);
+    application.extend_from_slice(&[0x01, next_counter()]);
     application.extend_from_slice(&request);
 
     let mut frame = vec![0x61, 0x88, 0x12];

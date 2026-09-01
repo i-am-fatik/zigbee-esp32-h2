@@ -57,7 +57,7 @@ fn server_says(id: u8, arguments: &[u8]) -> Vec<u8> {
     let mut application = vec![0x00, APPLICATION.endpoint];
     application.extend_from_slice(&CLUSTER_OTA.to_le_bytes());
     application.extend_from_slice(&APPLICATION.profile.to_le_bytes());
-    application.extend_from_slice(&[0x01, 0x07]);
+    application.extend_from_slice(&[0x01, common::next_counter()]);
     application.extend_from_slice(&request);
     deliver(&application)
 }
